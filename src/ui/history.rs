@@ -1,0 +1,262 @@
+use ratatui::{
+    Frame,
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+};
+
+use crate::app::App;
+use crate::ui::components;
+
+pub fn render_history_view(f: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // History list
+            Constraint::Length(3), // Footer
+        ])
+        .split(f.area());
+
+    if let [header, list, footer] = &chunks[..] {
+        render_history_header(f, app, *header);
+        render_history_list(f, app, *list);
+        render_history_footer(f, app, *footer);
+    }
+}
+
+fn render_history_header(f: &mut Frame, app: &App, area: Rect) {
+    let count = app.history_conversations.len();
+    let count_text = if count == 0 {
+        String::new()
+    } else {
+        format!(" ({} conversations)", count)
+    };
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "Kimi",
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" ", Style::default().fg(Color::DarkGray)),
+            Span::styled("History", Style::default().fg(Color::Cyan)),
+            Span::styled(&count_text, Style::default().fg(Color::DarkGray)),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        )
+        .alignment(Alignment::Left),
+        area,
+    );
+}
+
+fn render_history_list(f: &mut Frame, app: &App, area: Rect) {
+    let mut items = Vec::new();
+    let mut selectable_item_count = 0;
+    let mut selected_item_index: Option<usize> = None;
+
+    // Add filter input if active
+    if app.history_filter_active {
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled(" / ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(" ", Style::default()),
+            Span::styled(
+                app.history_filter.content(),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled(
+                "█",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ),
+        ])));
+        items.push(ListItem::new(Line::from("")));
+    }
+    items.push(ListItem::new(Line::from("")));
+
+    if app.history_conversations.is_empty() {
+        // Better empty state with helpful message
+        items.push(ListItem::new(Line::from("")));
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled("    ", Style::default()),
+            Span::styled("No conversations yet", Style::default().fg(Color::DarkGray)),
+        ])));
+        items.push(ListItem::new(Line::from("")));
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled("    Press ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled(" to start a new chat", Style::default().fg(Color::DarkGray)),
+        ])));
+    } else {
+        for (i, conv) in app.history_conversations.iter().enumerate() {
+            let is_selected = i == app.history_selected_index;
+
+            // Parse ISO date to more readable format
+            let date_display =
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&conv.created_at) {
+                    dt.format("%b %d, %H:%M").to_string()
+                } else {
+                    conv.created_at.clone()
+                };
+
+            let summary_text = conv
+                .summary
+                .clone()
+                .unwrap_or_else(|| "Untitled conversation".to_string());
+
+            // Selection styles
+            let (prefix, prefix_style) = if is_selected {
+                (
+                    " > ",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                ("   ", Style::default())
+            };
+
+            let summary_style = if is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            let meta_style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+
+            let max_summary_width = area.width.saturating_sub(6) as usize;
+            let summary_lines = wrap_summary_text(&summary_text, max_summary_width, 3);
+
+            let summary_line = Line::from(vec![
+                Span::styled(prefix, prefix_style),
+                Span::styled(summary_lines[0].clone(), summary_style),
+            ]);
+
+            // Second line: metadata (date, agent, message count)
+            let meta_line = Line::from(vec![
+                Span::styled("   ", meta_style),
+                Span::styled(date_display, meta_style),
+                Span::styled(" · ", meta_style),
+                Span::styled(
+                    conv.agent_name.clone(),
+                    if is_selected {
+                        Style::default().fg(Color::Black).bg(Color::Cyan)
+                    } else {
+                        Style::default().fg(Color::Green)
+                    },
+                ),
+                Span::styled(format!(" · {} messages", conv.message_count), meta_style),
+            ]);
+
+            let mut item_lines = vec![summary_line];
+            for line in summary_lines.iter().skip(1) {
+                item_lines.push(Line::from(vec![
+                    Span::styled("     ", prefix_style),
+                    Span::styled(line.clone(), summary_style),
+                ]));
+            }
+            item_lines.push(meta_line);
+
+            items.push(ListItem::new(item_lines));
+            if is_selected {
+                selected_item_index = Some(items.len().saturating_sub(1));
+            }
+            items.push(ListItem::new(Line::from("")));
+            selectable_item_count += 1;
+        }
+    }
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Conversations ")
+                .border_style(Style::default().fg(Color::DarkGray)),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+
+    // Calculate the position to render based on selected index
+    let mut list_state = ListState::default();
+    if selectable_item_count > 0 {
+        if let Some(item_index) = selected_item_index {
+            list_state.select(Some(item_index));
+        }
+    }
+
+    f.render_stateful_widget(list, area, &mut list_state);
+}
+
+fn wrap_summary_text(text: &str, max_width: usize, max_lines: usize) -> Vec<String> {
+    if max_width == 0 || max_lines == 0 {
+        return vec![String::new()];
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+
+    for word in text.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{} {}", current, word)
+        };
+
+        if candidate.chars().count() > max_width {
+            lines.push(current);
+            current = word.to_string();
+            if lines.len() == max_lines {
+                break;
+            }
+        } else {
+            current = candidate;
+        }
+    }
+
+    if lines.len() < max_lines && !current.is_empty() {
+        lines.push(current);
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines.truncate(max_lines);
+    lines
+}
+
+fn render_history_footer(f: &mut Frame, app: &App, area: Rect) {
+    let keybindings: &[(&str, &str)] = if app.history_filter_active {
+        &[("Type", "filter"), ("Esc", "cancel")]
+    } else {
+        &[
+            ("Enter", "load"),
+            ("Del", "delete"),
+            ("/", "search"),
+            ("Esc", "new chat"),
+        ]
+    };
+
+    let status: &[(&str, bool)] = if app.history_filter_active {
+        &[("FILTERING", true)]
+    } else {
+        &[]
+    };
+
+    components::render_navigation_footer(f, area, "HISTORY", keybindings, status);
+}

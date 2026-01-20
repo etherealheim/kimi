@@ -1,0 +1,64 @@
+/// Information about an available AI model
+#[derive(Debug, Clone)]
+pub struct AvailableModel {
+    pub name: String,
+    pub source: ModelSource,
+    pub is_available: bool,
+}
+
+/// Source of an AI model
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModelSource {
+    Ollama,
+    VeniceAPI,
+}
+
+/// Item in the model selection UI
+#[derive(Debug, Clone)]
+pub struct ModelSelectionItem {
+    pub agent_name: String,
+    pub model_index: usize,
+}
+
+/// Menu item for the command palette
+#[derive(Debug, Clone)]
+pub struct MenuItem {
+    pub name: String,
+    pub description: String,
+}
+
+/// A chat message with role, content, and timestamp
+#[derive(Debug, Clone)]
+pub struct ChatMessage {
+    pub role: MessageRole,
+    pub content: String,
+    pub timestamp: String,
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatusToast {
+    pub message: String,
+    pub created_at: std::time::Instant,
+}
+
+impl StatusToast {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            created_at: std::time::Instant::now(),
+        }
+    }
+
+    pub fn is_expired(&self, duration: std::time::Duration) -> bool {
+        self.created_at.elapsed() >= duration
+    }
+}
+
+/// Role of a chat message
+#[derive(Debug, Clone, PartialEq)]
+pub enum MessageRole {
+    User,
+    Assistant,
+    System,
+}

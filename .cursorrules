@@ -1,0 +1,276 @@
+# Kimi The Toolkit - Rust TUI Development Rules
+
+## Core Technologies
+- **Language**: Rust (Edition 2024)
+- **TUI**: ratatui + crossterm
+- **Error Handling**: color-eyre
+
+## Clean Code Principles (The Rules We Follow)
+
+### 1. Function Arguments (0-2 ideal, 3+ = group into struct)
+**Rule**: Minimize function parameters to reduce mental load and increase testability.
+
+**Solution**: Group 3+ related parameters into config/data structs with builder patterns.
+
+```rust
+// ❌ Bad: Too many parameters
+fn render_input(f: &mut Frame, area: Rect, content: &str, 
+                title: &str, placeholder: Option<&str>, show_cursor: bool)
+
+// ✅ Good: Config struct
+struct TextInputConfig<'a> {
+    content: &'a str,
+    title: &'a str,
+    placeholder: Option<&'a str>,
+    show_cursor: bool,
+}
+fn render_input(frame: &mut Frame, area: Rect, config: TextInputConfig)
+```
+
+### 2. No Cryptic Names (Pronounceable & Searchable)
+**Rule**: All variables must be pronounceable and searchable. No single letters except in tiny scopes.
+
+```rust
+// ❌ Bad: Cryptic single letters
+fn handler(f: &mut Frame, c: char, m: KeyModifiers, e: Error)
+for (i, m) in messages.iter().enumerate()
+
+// ✅ Good: Clear, searchable names
+fn handler(frame: &mut Frame, character: char, modifiers: KeyModifiers, error: Error)
+for (index, message) in messages.iter().enumerate()
+```
+
+### 3. Single Responsibility (One Function = One Thing)
+**Rule**: Functions should do exactly one thing at one abstraction level.
+
+```rust
+// ❌ Bad: Function doing multiple things
+pub fn send_message(&mut self) -> Result<()> {
+    // validate input
+    // add to history
+    // get dependencies
+    // build messages
+    // spawn thread
+    // ... 50+ lines
+}
+
+// ✅ Good: Extract helpers with clear purposes
+fn add_user_message_to_history(&mut self, content: &str)
+fn get_agent_dependencies(&self) -> Result<(Agent, Manager, Sender)>
+fn build_agent_messages(&self, prompt: &str) -> Vec<Message>
+fn spawn_agent_thread(agent, manager, messages, tx)
+
+pub fn send_message(&mut self) -> Result<()> {
+    let message = self.chat_input.content().to_string();
+    self.chat_input.clear();
+    
+    self.add_user_message_to_history(&message);
+    let (agent, manager, tx) = self.get_agent_dependencies()?;
+    let messages = self.build_agent_messages(&agent.system_prompt);
+    
+    Self::spawn_agent_thread(agent, manager, messages, tx);
+    Ok(())
+}
+```
+
+### 4. Levels of Abstraction (Stay Consistent)
+**Rule**: Each function operates at a single abstraction level. High-level functions call mid-level, mid calls low.
+
+```rust
+// ❌ Bad: Mixed abstraction levels
+fn render_chat(f: &mut Frame, app: &App) {
+    // High level: "render messages"
+    for msg in &app.messages {
+        // Low level: direct style construction
+        let style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+        f.render_widget(Paragraph::new(msg.content).style(style), area);
+    }
+}
+
+// ✅ Good: Consistent abstraction
+fn render_chat(frame: &mut Frame, app: &App) {
+    for message in &app.messages {
+        let styles = MessageStyles::for_role(&message.role);
+        render_message(frame, message, &styles);
+    }
+}
+```
+
+### 5. Small Functions (15-20 lines max)
+**Rule**: Keep functions small and focused. Extract blocks into named helper functions.
+
+**Target**: Most functions 5-15 lines, complex ones max 20-25 lines.
+
+## Rust-Specific Rules
+
+### Safe Indexing (NEVER panic)
+```rust
+// ❌ Bad: Can panic
+let item = items[index];
+render_header(chunks[0]);
+
+// ✅ Good: Safe alternatives
+let item = items.get(index).ok_or_else(|| eyre!("Index out of bounds"))?;
+if let [header, body] = &chunks[..] { render_header(*header); }
+```
+
+### Error Handling (Descriptive, never unwrap)
+```rust
+// ❌ Bad
+let agent = self.agent.as_ref().unwrap();
+
+// ✅ Good
+let agent = self.agent.as_ref()
+    .ok_or_else(|| eyre!("Agent manager not initialized"))?;
+```
+
+### Exhaustive Enum Matching (except event handlers)
+```rust
+// ❌ Bad
+match mode {
+    AppMode::Chat => handle_chat(),
+    _ => {} // Silent failure
+}
+
+// ✅ Good
+match mode {
+    AppMode::Chat => handle_chat(),
+    AppMode::CommandMenu => handle_menu(),
+    AppMode::History => handle_history(),
+    AppMode::Connect | AppMode::ApiKeyInput | AppMode::ModelSelection => {}
+}
+```
+
+## Code Style Enforcement
+
+### Clippy Lints (Required)
+```rust
+// In main.rs:
+#![deny(clippy::indexing_slicing)]
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
+#![warn(clippy::fallible_impl_from)]
+#![warn(clippy::fn_params_excessive_bools)]
+```
+
+### Naming Conventions
+- `snake_case`: functions, variables, modules
+- `PascalCase`: types, structs, enums
+- `SCREAMING_SNAKE_CASE`: constants
+- Booleans: `is_`, `has_`, `should_` prefix
+
+### Documentation
+- Public APIs: `///` doc comments
+- Complex logic: inline `//` comments
+- Important returns: `#[must_use]` attribute
+
+## Development Workflow
+
+### Before Commit
+```bash
+cargo fmt              # Auto-format
+cargo clippy -- -D warnings  # Strict linting
+cargo test            # Run tests
+cargo build           # Verify build
+```
+
+### Quality Checklist
+- ✓ No functions with 3+ parameters (without grouping)
+- ✓ No single-letter variables (except tiny loop indices)
+- ✓ No functions over 25 lines
+- ✓ No `.unwrap()` or `.expect()` calls
+- ✓ No direct array indexing
+- ✓ All enum matches exhaustive
+- ✓ All clippy warnings resolved
+
+## Architecture
+
+### Modular Structure
+```
+src/
+├── main.rs          # Entry, terminal setup, event loop
+├── app/
+│   ├── mod.rs       # App state, core logic
+│   ├── chat.rs      # Chat handling
+│   ├── menu.rs      # Command palette
+│   ├── history.rs   # History management
+│   └── ...
+├── ui/
+│   ├── mod.rs       # Render dispatcher
+│   ├── chat.rs      # Chat view
+│   ├── menu.rs      # Menu view
+│   └── components.rs # Reusable UI components
+├── agents/          # AI agent backends
+├── services/        # External services (TTS, etc)
+└── storage.rs       # Persistence layer
+```
+
+### State Management
+- Single `App` struct holds all state
+- `AppMode` enum for mode transitions
+- Immutable where possible
+- Clear update methods
+
+### UI Patterns (Ratatui)
+```rust
+// Safe layout splitting
+let chunks = Layout::default()
+    .constraints([Constraint::Length(3), Constraint::Min(0)])
+    .split(area);
+
+if let [header, content] = &chunks[..] {
+    render_header(frame, app, *header);
+    render_content(frame, app, *content);
+}
+```
+
+### Event Handling
+```rust
+// Non-blocking event loop
+if event::poll(Duration::from_millis(100))? {
+    match event::read()? {
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            match app.mode {
+                AppMode::Chat => handle_chat_mode(app, key.code, key.modifiers)?,
+                AppMode::CommandMenu => handle_command_menu(app, key.code)?,
+                // ... other modes
+            }
+        }
+        _ => {}
+    }
+}
+```
+
+## Key Features
+
+### Command Palette
+- `/` opens clean, minimal command list
+- Simple text-based selection
+- No icons or excessive decoration
+- Fast fuzzy filtering
+
+### Chat System
+- Tab key rotates between agents (chat ↔ translate)
+- Auto-scroll to new messages
+- History persistence
+- TTS support (Ctrl+R)
+
+### Navigation
+- Arrow keys: up/down selection
+- Enter: execute
+- Esc: close/back
+- Tab: rotate agents (in chat mode)
+- Ctrl+C: quit
+
+## Terminal Best Practices
+- Always restore terminal state on exit
+- Use alternate screen buffer
+- Enable raw mode for char input
+- Handle Ctrl+C gracefully
+- Clear screen on exit
+
+## Documentation Philosophy
+- `.cursorrules` is the single source of truth
+- Code should be self-documenting
+- No README.md unless explicitly requested
+- Focus on inline clarity over external docs
