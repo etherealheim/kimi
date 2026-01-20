@@ -79,10 +79,6 @@ fn render_help_body(f: &mut Frame, area: Rect) {
             Span::styled("  Ctrl+P", Style::default().fg(Color::Yellow)),
             Span::styled("  Toggle personality", Style::default().fg(Color::White)),
         ]),
-        Line::from(vec![
-            Span::styled("  Ctrl+S", Style::default().fg(Color::Yellow)),
-            Span::styled("  Toggle Brave search", Style::default().fg(Color::White)),
-        ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("  Esc", Style::default().fg(Color::Yellow)),

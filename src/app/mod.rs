@@ -92,7 +92,6 @@ pub struct App {
     pub connect_selected_provider: usize,
     pub connect_api_key_input: TextInput,
     pub connect_current_provider: Option<String>,
-    pub is_brave_search_enabled: bool,
     // Personality fields
     pub personality_items: Vec<String>,
     pub personality_selected_index: usize,
@@ -110,6 +109,7 @@ pub struct App {
     pub status_toast: Option<StatusToast>,
     pub clipboard_service: ClipboardService,
     pub personality_enabled: bool,
+    pub personality_enabled_by_agent: HashMap<String, bool>,
     pub personality_text: Option<String>,
     pub loading_frame: u8,
     pub last_loading_tick: Option<std::time::Instant>,
@@ -215,7 +215,6 @@ impl App {
             connect_selected_provider: 0,
             connect_api_key_input: TextInput::new(),
             connect_current_provider: None,
-            is_brave_search_enabled: false,
             personality_items: Vec::new(),
             personality_selected_index: 0,
             personality_create_input: TextInput::new(),
@@ -230,6 +229,7 @@ impl App {
             status_toast: None,
             clipboard_service: ClipboardService::new(),
             personality_enabled: false,
+            personality_enabled_by_agent: HashMap::new(),
             personality_text: None,
             loading_frame: 0,
             last_loading_tick: None,
@@ -392,20 +392,6 @@ impl App {
         }
     }
 
-    pub fn toggle_brave_search(&mut self) {
-        self.is_brave_search_enabled = !self.is_brave_search_enabled;
-        let status = if self.is_brave_search_enabled {
-            "enabled"
-        } else {
-            "disabled"
-        };
-        self.add_system_message(&format!("Brave search {}", status));
-        if self.is_brave_search_enabled {
-            self.show_status_toast("BRAVE SEARCH");
-        } else {
-            self.show_status_toast("SEARCH OFF");
-        }
-    }
 
     fn load_selected_models_from_config(&mut self, config: &Config) {
         for (agent_name, agent_config) in &config.agents {

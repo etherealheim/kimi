@@ -457,9 +457,6 @@ fn handle_chat_mode(app: &mut App, key_code: KeyCode, modifiers: KeyModifiers) -
                 app.show_status_toast("TTS INACTIVE");
             }
         }
-        (KeyCode::Char('s'), key_modifiers) if key_modifiers.contains(KeyModifiers::CONTROL) => {
-            app.toggle_brave_search();
-        }
         (KeyCode::Char('p'), key_modifiers) if key_modifiers.contains(KeyModifiers::CONTROL) => {
             app.toggle_personality();
         }

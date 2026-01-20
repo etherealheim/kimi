@@ -6,7 +6,8 @@ use std::process::Command;
 
 const DEFAULT_PERSONALITY_NAME: &str = "Casca";
 const MY_PERSONALITY_NAME: &str = "My personality";
-const PERSONALITY_EXTENSION: &str = "txt";
+const PERSONALITY_EXTENSION: &str = "md";
+const LEGACY_PERSONALITY_EXTENSION: &str = "txt";
 
 pub fn default_personality_name() -> String {
     DEFAULT_PERSONALITY_NAME.to_string()
@@ -18,6 +19,7 @@ pub fn my_personality_name() -> String {
 
 pub fn list_personalities() -> Result<Vec<String>> {
     let personality_dir = ensure_personality_dir()?;
+    migrate_legacy_personality_files(&personality_dir)?;
     let mut names = Vec::new();
     for entry in fs::read_dir(&personality_dir)? {
         let entry = entry?;
@@ -45,6 +47,12 @@ pub fn list_personalities() -> Result<Vec<String>> {
 pub fn ensure_personality(name: &str) -> Result<PathBuf> {
     let personality_path = personality_path(name)?;
     if !personality_path.exists() {
+        let legacy_path = legacy_personality_path(name)?;
+        if legacy_path.exists() {
+            fs::rename(&legacy_path, &personality_path)?;
+        }
+    }
+    if !personality_path.exists() {
         fs::write(&personality_path, default_personality_template())?;
     }
     Ok(personality_path)
@@ -53,6 +61,12 @@ pub fn ensure_personality(name: &str) -> Result<PathBuf> {
 pub fn ensure_my_personality() -> Result<PathBuf> {
     let name = my_personality_name();
     let personality_path = personality_path(&name)?;
+    if !personality_path.exists() {
+        let legacy_path = legacy_personality_path(&name)?;
+        if legacy_path.exists() {
+            fs::rename(&legacy_path, &personality_path)?;
+        }
+    }
     if !personality_path.exists() {
         fs::write(&personality_path, my_personality_template())?;
     }
@@ -182,6 +196,20 @@ fn personality_path(name: &str) -> Result<PathBuf> {
     Ok(personality_dir.join(format!("{}.{}", trimmed, PERSONALITY_EXTENSION)))
 }
 
+fn legacy_personality_path(name: &str) -> Result<PathBuf> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(color_eyre::eyre::eyre!(
+            "Personality name cannot be empty"
+        ));
+    }
+    let personality_dir = ensure_personality_dir()?;
+    Ok(personality_dir.join(format!(
+        "{}.{}",
+        trimmed, LEGACY_PERSONALITY_EXTENSION
+    )))
+}
+
 fn try_spawn_terminal(program: &str, args: &[String]) -> bool {
     Command::new(program).args(args).spawn().is_ok()
 }
@@ -197,8 +225,37 @@ fn default_personality_template() -> String {
 
 fn my_personality_template() -> String {
     [
-        "This is context about the user.",
-        "Add preferences, location, tone, and other helpful details.",
+        "[always]",
+        "Name: Lukas",
+        "Location: Prague",
+        "Timezone: CET",
+        "Tone: direct, concise",
+        "",
+        "[context:games]",
+        "Plays: Elden Ring",
+        "Likes: soulslike games",
+        "",
+        "[context:food]",
+        "Prefers: spicy",
+        "Allergy: none",
     ]
     .join("\n")
+}
+
+fn migrate_legacy_personality_files(personality_dir: &PathBuf) -> Result<()> {
+    for entry in fs::read_dir(personality_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some(LEGACY_PERSONALITY_EXTENSION) {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let target = personality_dir.join(format!("{}.{}", stem, PERSONALITY_EXTENSION));
+        if !target.exists() {
+            fs::rename(&path, target)?;
+        }
+    }
+    Ok(())
 }

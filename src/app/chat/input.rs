@@ -1,7 +1,7 @@
 use crate::app::types::{ChatAttachment, ChatMessage, MessageRole};
 use crate::app::App;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use chrono::Local;
+use chrono::{Datelike, Local};
 use color_eyre::Result;
 use std::path::{Path, PathBuf};
 
@@ -32,6 +32,11 @@ impl App {
         let user_message = self.cleaned_chat_input_with_attachments();
         self.chat_input.clear();
         self.reset_chat_scroll();
+
+        if let Some(reply) = try_handle_date_question(&user_message) {
+            self.add_assistant_message(&reply);
+            return Ok(());
+        }
 
         self.add_user_message_to_history(&user_message);
         self.is_loading = true;
@@ -66,6 +71,20 @@ impl App {
             content: content.to_string(),
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             display_name: None,
+        });
+    }
+
+    pub fn add_assistant_message(&mut self, content: &str) {
+        let display_name = if self.personality_enabled {
+            self.personality_name.clone()
+        } else {
+            None
+        };
+        self.chat_history.push(ChatMessage {
+            role: MessageRole::Assistant,
+            content: content.to_string(),
+            timestamp: Local::now().format("%H:%M:%S").to_string(),
+            display_name,
         });
     }
 
@@ -299,4 +318,127 @@ fn remove_attachment_tokens(content: &str) -> String {
         break;
     }
     output
+}
+
+fn try_handle_date_question(input: &str) -> Option<String> {
+    let lowered = input.trim().to_lowercase();
+    let today = chrono::Local::now().date_naive();
+    if lowered.contains("day after tomorrow") {
+        let date = today + chrono::Duration::days(2);
+        return Some(format!("The day after tomorrow is {}.", date.format("%A, %B %d, %Y")));
+    }
+    if lowered.contains("today") {
+        return Some(format!("Today is {}.", today.format("%A, %B %d, %Y")));
+    }
+    if lowered.contains("tomorrow") {
+        let tomorrow = today + chrono::Duration::days(1);
+        return Some(format!(
+            "Tomorrow is {}.",
+            tomorrow.format("%A, %B %d, %Y")
+        ));
+    }
+    if lowered.contains("yesterday") {
+        let yesterday = today - chrono::Duration::days(1);
+        return Some(format!(
+            "Yesterday was {}.",
+            yesterday.format("%A, %B %d, %Y")
+        ));
+    }
+    if let Some(days) = parse_day_offset(&lowered) {
+        let date = today + chrono::Duration::days(days.into());
+        if days >= 0 {
+            return Some(format!(
+                "In {} days it will be {}.",
+                days,
+                date.format("%A, %B %d, %Y")
+            ));
+        }
+        return Some(format!(
+            "{} days ago was {}.",
+            days.abs(),
+            date.format("%A, %B %d, %Y")
+        ));
+    }
+    if let Some(date) = parse_weekday_reference(&lowered, today) {
+        return Some(format!(
+            "That is {}.",
+            date.format("%A, %B %d, %Y")
+        ));
+    }
+    None
+}
+
+fn parse_day_offset(text: &str) -> Option<i64> {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    for window in tokens.windows(3) {
+        if let [number, "days", "ago"] = window {
+            if let Ok(value) = number.parse::<i64>() {
+                return Some(-value);
+            }
+        }
+        if let [number, "days", "from"] = window {
+            if let Ok(value) = number.parse::<i64>() {
+                return Some(value);
+            }
+        }
+    }
+    for window in tokens.windows(2) {
+        if let [number, "days"] = window {
+            if let Ok(value) = number.parse::<i64>() {
+                if text.contains("in ") {
+                    return Some(value);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn parse_weekday_reference(
+    text: &str,
+    today: chrono::NaiveDate,
+) -> Option<chrono::NaiveDate> {
+    let weekday = parse_weekday(text)?;
+    let today_weekday = today.weekday();
+    let mut delta = weekday.num_days_from_monday() as i64
+        - today_weekday.num_days_from_monday() as i64;
+
+    if text.contains("next ") {
+        if delta <= 0 {
+            delta += 7;
+        }
+    } else if text.contains("this ") {
+        if delta < 0 {
+            delta += 7;
+        }
+    } else if delta <= 0 {
+        delta += 7;
+    }
+
+    Some(today + chrono::Duration::days(delta))
+}
+
+fn parse_weekday(text: &str) -> Option<chrono::Weekday> {
+    if text.contains("monday") {
+        return Some(chrono::Weekday::Mon);
+    }
+    if text.contains("tuesday") {
+        return Some(chrono::Weekday::Tue);
+    }
+    if text.contains("wednesday") {
+        return Some(chrono::Weekday::Wed);
+    }
+    if text.contains("thursday") {
+        return Some(chrono::Weekday::Thu);
+    }
+    if text.contains("friday") {
+        return Some(chrono::Weekday::Fri);
+    }
+    if text.contains("saturday") {
+        return Some(chrono::Weekday::Sat);
+    }
+    if text.contains("sunday") {
+        return Some(chrono::Weekday::Sun);
+    }
+    None
 }

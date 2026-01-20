@@ -40,6 +40,19 @@ impl App {
         if let Some(current_agent) = &self.current_agent {
             self.chat_history_by_agent
                 .insert(current_agent.name.clone(), self.chat_history.clone());
+            self.personality_enabled_by_agent
+                .insert(current_agent.name.clone(), self.personality_enabled);
+        }
+
+        if agent_name == "translate" {
+            self.personality_enabled = false;
+            self.personality_text = None;
+        } else if let Some(is_enabled) = self.personality_enabled_by_agent.get(agent_name).copied()
+        {
+            self.personality_enabled = is_enabled;
+            if !self.personality_enabled {
+                self.personality_text = None;
+            }
         }
 
         let selected_model = self
@@ -130,15 +143,43 @@ impl App {
         }
 
         let mut prompt_lines = vec![system_prompt.to_string()];
+        let now = chrono::Local::now();
+        prompt_lines.push(format!(
+            "Current date and time: {}",
+            now.format("%Y-%m-%d %H:%M:%S")
+        ));
         prompt_lines.push("Respond in plain text. Do not use Markdown formatting.".to_string());
         if let Ok(profile_text) = crate::services::personality::read_my_personality() {
-            let trimmed_profile = profile_text.trim();
-            if !trimmed_profile.is_empty() {
-                prompt_lines.push(format!("User context:\n{}", trimmed_profile));
+            let blocks = parse_user_context_blocks(&profile_text);
+            let query = self
+                .last_user_message_content()
+                .unwrap_or_default()
+                .to_lowercase();
+            for block in blocks {
+                match block.kind {
+                    UserContextKind::Always => {
+                        if !block.content.is_empty() {
+                            prompt_lines.push(format!(
+                                "User context (always):\n{}",
+                                block.content
+                            ));
+                        }
+                    }
+                    UserContextKind::Context { tag } => {
+                        if !block.content.is_empty()
+                            && should_include_user_context(&query, &tag, &block.content)
+                        {
+                            prompt_lines.push(format!(
+                                "User context ({}):\n{}",
+                                tag, block.content
+                            ));
+                        }
+                    }
+                }
             }
         }
-        if self.is_brave_search_enabled {
-            if let Some(query) = self.last_user_message_content() {
+        if let Some(query) = self.last_user_message_content() {
+            if should_use_brave_search(&query) {
                 if !self.connect_brave_key.trim().is_empty() {
                     match crate::services::brave::search(&self.connect_brave_key, &query) {
                         Ok(results) => {
@@ -155,20 +196,16 @@ impl App {
                                     "Brave search results for \"{}\":\n{}",
                                     query, results
                                 ));
-                            }
-                            if results.is_empty() {
+                            } else {
                                 self.add_system_message("Brave search returned no results");
                             }
                         }
                         Err(error) => {
-                            self.add_system_message(&format!(
-                                "Brave search error: {}",
-                                error
-                            ));
+                            self.add_system_message(&format!("Brave search error: {}", error));
                         }
                     }
                 } else {
-                    self.add_system_message("Brave search enabled but API key is missing");
+                    self.add_system_message("Brave search is configured but API key is missing");
                 }
             }
         }
@@ -177,12 +214,6 @@ impl App {
                 if !text.trim().is_empty() {
                     prompt_lines.push(text.trim().to_string());
                 }
-            }
-            if let Some(name) = self.personality_name.as_deref() {
-                prompt_lines.push(format!(
-                    "Your name is {}. When asked who you are, reply that you are {}.",
-                    name, name
-                ));
             }
         }
         let merged_prompt = prompt_lines.join("\n\n");
@@ -220,4 +251,125 @@ impl App {
             .find(|message| message.role == MessageRole::User)
             .map(|message| message.content.clone())
     }
+}
+
+fn should_use_brave_search(query: &str) -> bool {
+    let lowered = query.to_lowercase();
+    if lowered.is_empty() {
+        return false;
+    }
+    let search_terms = [
+        "search",
+        "look up",
+        "lookup",
+        "find",
+        "latest",
+        "current",
+        "today",
+        "now",
+        "news",
+        "update",
+        "release date",
+        "price",
+        "weather",
+        "forecast",
+        "event",
+        "happening",
+        "what is going on",
+        "schedule",
+        "score",
+        "stock",
+        "crypto",
+    ];
+    if search_terms.iter().any(|term| lowered.contains(term)) {
+        return true;
+    }
+
+    let has_time_cue = ["2024", "2025", "this week", "this month"]
+        .iter()
+        .any(|term| lowered.contains(term));
+    if has_time_cue {
+        return true;
+    }
+
+    let looks_like_question = lowered.contains('?') || lowered.starts_with("what ");
+    let has_location = ["in ", "near ", "at "].iter().any(|token| lowered.contains(token));
+    looks_like_question && has_location
+}
+
+#[derive(Debug, Clone)]
+enum UserContextKind {
+    Always,
+    Context { tag: String },
+}
+
+#[derive(Debug, Clone)]
+struct UserContextBlock {
+    kind: UserContextKind,
+    content: String,
+}
+
+fn parse_user_context_blocks(profile_text: &str) -> Vec<UserContextBlock> {
+    let mut blocks = Vec::new();
+    let mut current_kind: Option<UserContextKind> = None;
+    let mut current_lines: Vec<String> = Vec::new();
+
+    let flush_block = |blocks: &mut Vec<UserContextBlock>,
+                       kind: &mut Option<UserContextKind>,
+                       lines: &mut Vec<String>| {
+        if let Some(kind) = kind.take() {
+            let content = lines.join("\n").trim().to_string();
+            blocks.push(UserContextBlock { kind, content });
+        }
+        lines.clear();
+    };
+
+    for line in profile_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case("[always]") {
+            flush_block(&mut blocks, &mut current_kind, &mut current_lines);
+            current_kind = Some(UserContextKind::Always);
+            continue;
+        }
+        if let Some(tag) = trimmed
+            .strip_prefix("[context:")
+            .and_then(|value| value.strip_suffix(']'))
+        {
+            flush_block(&mut blocks, &mut current_kind, &mut current_lines);
+            current_kind = Some(UserContextKind::Context {
+                tag: tag.trim().to_lowercase(),
+            });
+            continue;
+        }
+        current_lines.push(line.to_string());
+    }
+
+    flush_block(&mut blocks, &mut current_kind, &mut current_lines);
+    blocks
+}
+
+fn should_include_user_context(query: &str, tag: &str, content: &str) -> bool {
+    if tag.is_empty() {
+        return false;
+    }
+    if query.contains(tag) {
+        return true;
+    }
+
+    let keywords = extract_context_keywords(content);
+    keywords.iter().any(|keyword| query.contains(keyword))
+}
+
+fn extract_context_keywords(content: &str) -> Vec<String> {
+    let mut keywords = Vec::new();
+    for token in content.split(|character: char| !character.is_alphanumeric()) {
+        let lowered = token.trim().to_lowercase();
+        if lowered.len() < 3 {
+            continue;
+        }
+        keywords.push(lowered);
+    }
+    keywords.sort();
+    keywords.dedup();
+    keywords
 }
