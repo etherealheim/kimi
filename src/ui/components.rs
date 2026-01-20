@@ -64,16 +64,15 @@ pub fn render_text_input(frame: &mut Frame, area: Rect, config: TextInputConfig)
             ),
         ])
     } else {
-        Line::from(vec![
-            Span::styled("> ", Style::default().fg(Color::Cyan)),
-            Span::styled(config.content, Style::default().fg(Color::White)),
-            Span::styled(
-                cursor_indicator,
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::SLOW_BLINK),
-            ),
-        ])
+        let mut spans = vec![Span::styled("> ", Style::default().fg(Color::Cyan))];
+        spans.extend(build_input_spans(config.content));
+        spans.push(Span::styled(
+            cursor_indicator,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::SLOW_BLINK),
+        ));
+        Line::from(spans)
     };
 
     let border_color = if config.content.is_empty() {
@@ -93,6 +92,47 @@ pub fn render_text_input(frame: &mut Frame, area: Rect, config: TextInputConfig)
         }),
         area,
     );
+}
+
+fn build_input_spans(content: &str) -> Vec<Span<'_>> {
+    let mut spans = Vec::new();
+    let mut index = 0;
+    while let Some(start_offset) = content[index..].find("[[image:") {
+        let start_index = index + start_offset;
+        if start_index > index {
+            spans.push(Span::styled(
+                &content[index..start_index],
+                Style::default().fg(Color::White),
+            ));
+        }
+        if let Some(end_offset) = content[start_index..].find("]]") {
+            let end_index = start_index + end_offset + 2;
+            let label = content[start_index + 8..start_index + end_offset].trim();
+            let chip_text = format!(" {} ", label);
+            spans.push(Span::styled(
+                chip_text,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            index = end_index;
+            continue;
+        }
+        spans.push(Span::styled(
+            &content[start_index..],
+            Style::default().fg(Color::White),
+        ));
+        return spans;
+    }
+
+    if index < content.len() {
+        spans.push(Span::styled(
+            &content[index..],
+            Style::default().fg(Color::White),
+        ));
+    }
+    spans
 }
 
 /// Renders a footer with mode indicator, keybindings, and status

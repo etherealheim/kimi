@@ -12,6 +12,10 @@ pub struct Config {
     pub elevenlabs: ElevenLabsConfig,
     #[serde(default)]
     pub venice: VeniceConfig,
+    #[serde(default)]
+    pub brave: BraveConfig,
+    #[serde(default)]
+    pub personality: PersonalityConfig,
     pub agents: HashMap<String, AgentConfig>,
 }
 
@@ -35,6 +39,18 @@ pub struct VeniceConfig {
     pub api_key: String,
 }
 
+/// Brave Search configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BraveConfig {
+    pub api_key: String,
+}
+
+/// Personality configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PersonalityConfig {
+    pub selected: String,
+}
+
 /// Agent-specific configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
@@ -54,7 +70,7 @@ impl Default for Config {
         agents.insert(
             "translate".to_string(),
             AgentConfig {
-                model: "gemmatranslate".to_string(),
+                model: "translategemma:latest".to_string(),
                 system_prompt: format!(
                     "{} You specialize in translation between languages.",
                     kimi_personality
@@ -65,7 +81,7 @@ impl Default for Config {
         agents.insert(
             "chat".to_string(),
             AgentConfig {
-                model: "gemma".to_string(),
+                model: "gemma3:12b".to_string(),
                 system_prompt: kimi_personality.to_string(),
             },
         );
@@ -81,6 +97,12 @@ impl Default for Config {
             },
             venice: VeniceConfig {
                 api_key: String::new(),
+            },
+            brave: BraveConfig {
+                api_key: String::new(),
+            },
+            personality: PersonalityConfig {
+                selected: "Casca".to_string(),
             },
             agents,
         }

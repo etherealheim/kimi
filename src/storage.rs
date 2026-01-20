@@ -20,6 +20,16 @@ pub struct StoredMessage {
     pub role: String,
     pub content: String,
     pub timestamp: String,
+    pub display_name: Option<String>,
+}
+
+/// Message data for persistence
+#[derive(Debug, Clone)]
+pub struct ConversationMessage {
+    pub role: String,
+    pub content: String,
+    pub timestamp: String,
+    pub display_name: Option<String>,
 }
 
 /// Data for saving a new conversation
@@ -27,12 +37,12 @@ pub struct ConversationData<'a> {
     pub agent_name: &'a str,
     pub summary: Option<&'a str>,
     pub detailed_summary: Option<&'a str>,
-    pub messages: &'a [(String, String, String)],
+    pub messages: &'a [ConversationMessage],
 }
 
 impl<'a> ConversationData<'a> {
     /// Creates new conversation data
-    pub fn new(agent_name: &'a str, messages: &'a [(String, String, String)]) -> Self {
+    pub fn new(agent_name: &'a str, messages: &'a [ConversationMessage]) -> Self {
         Self {
             agent_name,
             summary: None,
@@ -101,12 +111,14 @@ impl StorageManager {
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
+                display_name TEXT,
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
             )",
             [],
         )?;
 
         self.ensure_column(&conn, "conversations", "detailed_summary", "TEXT")?;
+        self.ensure_column(&conn, "messages", "display_name", "TEXT")?;
         Ok(())
     }
 
@@ -142,10 +154,16 @@ impl StorageManager {
 
         let conversation_id = conn.last_insert_rowid();
 
-        for (role, content, timestamp) in data.messages {
+        for message in data.messages {
             conn.execute(
-                "INSERT INTO messages (conversation_id, role, content, timestamp) VALUES (?1, ?2, ?3, ?4)",
-                params![conversation_id, role, content, timestamp],
+                "INSERT INTO messages (conversation_id, role, content, timestamp, display_name) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    conversation_id,
+                    &message.role,
+                    &message.content,
+                    &message.timestamp,
+                    &message.display_name
+                ],
             )?;
         }
 
@@ -191,7 +209,7 @@ impl StorageManager {
         )?;
 
         let mut stmt = conn.prepare(
-            "SELECT role, content, timestamp FROM messages WHERE conversation_id = ?1 ORDER BY id ASC"
+            "SELECT role, content, timestamp, display_name FROM messages WHERE conversation_id = ?1 ORDER BY id ASC"
         )?;
 
         let messages = stmt
@@ -200,6 +218,7 @@ impl StorageManager {
                     role: row.get(0)?,
                     content: row.get(1)?,
                     timestamp: row.get(2)?,
+                    display_name: row.get(3)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -220,7 +239,7 @@ impl StorageManager {
         id: i64,
         summary: &str,
         detailed_summary: &str,
-        messages: &[(String, String, String)],
+        messages: &[ConversationMessage],
     ) -> Result<()> {
         let mut conn = self.get_connection()?;
         let now = chrono::Local::now().to_rfc3339();
@@ -236,10 +255,16 @@ impl StorageManager {
             params![id],
         )?;
 
-        for (role, content, timestamp) in messages {
+        for message in messages {
             tx.execute(
-                "INSERT INTO messages (conversation_id, role, content, timestamp) VALUES (?1, ?2, ?3, ?4)",
-                params![id, role, content, timestamp],
+                "INSERT INTO messages (conversation_id, role, content, timestamp, display_name) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    id,
+                    &message.role,
+                    &message.content,
+                    &message.timestamp,
+                    &message.display_name
+                ],
             )?;
         }
 

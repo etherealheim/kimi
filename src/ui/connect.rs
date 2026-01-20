@@ -57,7 +57,10 @@ pub fn render_connect_providers(f: &mut Frame, app: &App) {
                 "Venice AI" if !app.connect_venice_key.is_empty() => {
                     ("configured", Style::default().fg(Color::Green), "●")
                 }
-                "ElevenLabs" | "Venice AI" => {
+                "Brave Search" if !app.connect_brave_key.is_empty() => {
+                    ("configured", Style::default().fg(Color::Green), "●")
+                }
+                "ElevenLabs" | "Venice AI" | "Brave Search" => {
                     ("not configured", Style::default().fg(Color::DarkGray), "○")
                 }
                 _ => ("unknown", Style::default().fg(Color::Red), "?"),
@@ -193,6 +196,31 @@ pub fn render_api_key_input(f: &mut Frame, app: &App) {
             ]),
         ],
         "Venice AI" => vec![Line::from("")],
+        "Brave Search" => vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  ● ", Style::default().fg(Color::Green)),
+                Span::styled(
+                    "Brave Search",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    " - Web search context for chat",
+                    Style::default().fg(Color::White),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("    Get your key: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "https://api.search.brave.com/app/keys",
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::UNDERLINED),
+                ),
+            ]),
+        ],
         _ => vec![Line::from("")],
     };
 

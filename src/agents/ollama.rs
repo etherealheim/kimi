@@ -20,6 +20,8 @@ struct OllamaChatRequest {
 struct OllamaMessage {
     role: String,
     content: String,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    images: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,6 +47,7 @@ impl OllamaClient {
                     MessageRole::Assistant => "assistant".to_string(),
                 },
                 content: msg.content.clone(),
+                images: msg.images.clone(),
             })
             .collect();
 

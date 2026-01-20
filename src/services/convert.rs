@@ -45,7 +45,9 @@ fn resolve_desktop_dir() -> Result<PathBuf> {
 fn normalize_format(format: &str) -> Result<String> {
     let normalized = format.trim().to_lowercase();
     match normalized.as_str() {
-        "mp4" | "webm" | "mov" | "gif" => Ok(normalized),
+        "mp4" | "webm" | "mov" | "gif" | "png" | "jpg" | "jpeg" | "webp" | "bmp" | "tiff" => {
+            Ok(normalized)
+        }
         _ => Err(color_eyre::eyre::eyre!("Unsupported format: {}", format)),
     }
 }

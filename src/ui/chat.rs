@@ -259,7 +259,6 @@ fn add_loading_indicator(
 ) {
     let dots_frames = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
     let dots = dots_frames[(frame as usize) % dots_frames.len()].to_string();
-    let pulse_index = (frame % 4) as usize;
     let assistant_name = if app.personality_enabled {
         app.personality_name.as_deref().unwrap_or("Kimi")
     } else {
@@ -267,9 +266,10 @@ fn add_loading_indicator(
     };
 
     let name_chars: Vec<char> = assistant_name.chars().collect();
+    let pulse_index = pulse_index_for_frame(frame, name_chars.len());
     let mut kimi_spans = Vec::new();
-    for (index, character) in name_chars.iter().copied().enumerate() {
-        let is_bright = index == pulse_index;
+    for (char_index, character) in name_chars.iter().copied().enumerate() {
+        let is_bright = pulse_index == Some(char_index);
         let kimi_style = if is_bright {
             Style::default()
                 .fg(Color::Magenta)
@@ -294,6 +294,26 @@ fn add_loading_indicator(
         Style::default().fg(Color::DarkGray),
     )]);
     lines.push(Line::from(line_spans));
+}
+
+fn pulse_index_for_frame(frame: u8, name_len: usize) -> Option<usize> {
+    if name_len == 0 {
+        return None;
+    }
+
+    let max_index = name_len.saturating_sub(1);
+    if max_index == 0 {
+        return Some(0);
+    }
+
+    let cycle_len = max_index * 2;
+    let frame_index = (frame as usize) % cycle_len;
+    let pulse_index = if frame_index <= max_index {
+        frame_index
+    } else {
+        cycle_len - frame_index
+    };
+    Some(pulse_index)
 }
 
 /// Calculates scroll position based on viewport and offset

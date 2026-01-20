@@ -20,6 +20,8 @@ impl App {
         self.chat_history.clear();
         self.chat_input.clear();
         self.current_conversation_id = None;
+        self.personality_enabled = false;
+        self.personality_text = None;
         if let Some(agent) = &self.current_agent {
             let agent_name = agent.name.clone();
             let _ = self.load_agent(&agent_name);
@@ -65,7 +67,7 @@ impl App {
                 role,
                 content: msg.content,
                 timestamp: msg.timestamp,
-                display_name: None,
+                display_name: msg.display_name,
             });
         }
 

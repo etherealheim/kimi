@@ -17,6 +17,7 @@ impl App {
         if let Ok(config) = Config::load() {
             self.connect_elevenlabs_key = config.elevenlabs.api_key.clone();
             self.connect_venice_key = config.venice.api_key.clone();
+            self.connect_brave_key = config.brave.api_key.clone();
         }
     }
 
@@ -33,6 +34,10 @@ impl App {
                 "Venice AI" => {
                     self.connect_api_key_input
                         .set_content(self.connect_venice_key.clone());
+                }
+                "Brave Search" => {
+                    self.connect_api_key_input
+                        .set_content(self.connect_brave_key.clone());
                 }
                 _ => {}
             }
@@ -92,6 +97,14 @@ impl App {
                             display_name: None,
                         });
                     }
+                }
+                "Brave Search" => {
+                    self.connect_brave_key = self.connect_api_key_input.content().to_string();
+                    if let Ok(mut config) = Config::load() {
+                        config.brave.api_key = self.connect_brave_key.clone();
+                        let _ = config.save();
+                    }
+                    did_save = true;
                 }
                 _ => {}
             }

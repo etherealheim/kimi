@@ -214,8 +214,8 @@ impl App {
 
 fn allowed_models_for_agent(agent_name: &str) -> Vec<&'static str> {
     match agent_name {
-        "translate" => vec!["translategemma:latest", "gemma2:2b"],
-        "chat" => vec!["gemma2:2b", "llama2"],
+        "translate" => vec!["gemma3:12b", "translategemma:latest", "gemma2:2b"],
+        "chat" => vec!["gemma3:12b", "gemma2:2b", "llama2"],
         _ => Vec::new(),
     }
 }

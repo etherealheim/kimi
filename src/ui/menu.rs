@@ -7,13 +7,6 @@ use ratatui::{
 };
 
 use crate::app::App;
-/// Get simple prefix indicator for commands
-fn get_command_prefix(name: &str) -> &'static str {
-    match name {
-        "translate" | "chat" => ">",
-        _ => " ",
-    }
-}
 
 pub fn render_command_menu(frame: &mut Frame, app: &App) {
     let filtered_items = app.filtered_items();
@@ -111,13 +104,18 @@ fn render_empty_message(frame: &mut Frame, area: Rect) {
     frame.render_widget(empty_msg, area);
 }
 
-fn render_command_list(frame: &mut Frame, app: &App, filtered_items: &[crate::app::MenuItem], area: Rect) {
+fn render_command_list(
+    frame: &mut Frame,
+    app: &App,
+    filtered_items: &[crate::app::MenuItem],
+    area: Rect,
+) {
     let items: Vec<ListItem> = filtered_items
         .iter()
         .enumerate()
         .map(|(index, item)| {
             let is_selected = index == app.selected_index;
-            let prefix = get_command_prefix(&item.name);
+            let prefix = " ";
 
             let name_style = if is_selected {
                 Style::default()

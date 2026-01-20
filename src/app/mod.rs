@@ -1,10 +1,12 @@
 mod chat;
 mod commands;
 mod connect;
+mod help;
 mod history;
 mod menu;
 mod models;
 mod navigation;
+mod personality;
 mod scroll;
 mod text_input;
 mod types;
@@ -33,6 +35,9 @@ pub enum AppMode {
     Connect,
     ApiKeyInput,
     History,
+    Help,
+    PersonalitySelection,
+    PersonalityCreate,
 }
 
 /// Events from the agent processing thread
@@ -60,6 +65,8 @@ pub struct App {
     pub chat_history: Vec<ChatMessage>,
     pub chat_history_by_agent: HashMap<String, Vec<ChatMessage>>,
     pub chat_input: TextInput,
+    pub chat_attachments: Vec<ChatAttachment>,
+    pub next_attachment_id: usize,
     pub current_agent: Option<Agent>,
     pub is_loading: bool,
     pub last_response: Option<String>,
@@ -80,10 +87,17 @@ pub struct App {
     // Connect fields
     pub connect_elevenlabs_key: String,
     pub connect_venice_key: String,
+    pub connect_brave_key: String,
     pub connect_providers: Vec<String>,
     pub connect_selected_provider: usize,
     pub connect_api_key_input: TextInput,
     pub connect_current_provider: Option<String>,
+    pub is_brave_search_enabled: bool,
+    // Personality fields
+    pub personality_items: Vec<String>,
+    pub personality_selected_index: usize,
+    pub personality_create_input: TextInput,
+    pub personality_name: Option<String>,
 
     // History fields
     pub history_conversations: Vec<ConversationSummary>,
@@ -95,10 +109,8 @@ pub struct App {
     pub current_conversation_id: Option<i64>,
     pub status_toast: Option<StatusToast>,
     pub clipboard_service: ClipboardService,
-    pub should_open_personality_editor: bool,
     pub personality_enabled: bool,
     pub personality_text: Option<String>,
-    pub personality_name: Option<String>,
     pub loading_frame: u8,
     pub last_loading_tick: Option<std::time::Instant>,
     pub download_active: bool,
@@ -138,11 +150,10 @@ fn parse_model_command(command: &str) -> Option<(String, String)> {
 
 fn base_menu_items() -> Vec<MenuItem> {
     vec![
-        menu_item("translate", "Translation agent"),
-        menu_item("chat", "General chat"),
         menu_item("models", "Select models per agent"),
         menu_item("connect", "API token configuration"),
-        menu_item("personality", "Edit system personality"),
+        menu_item("personality", "Manage personalities"),
+        menu_item("help", "Show keyboard shortcuts"),
         menu_item("quit", "Exit the application"),
     ]
 }
@@ -153,7 +164,7 @@ impl App {
         let available_models: HashMap<String, Vec<AvailableModel>> = HashMap::new();
         let selected_models = [
             ("translate", vec!["translategemma:latest"]),
-            ("chat", vec!["gemma2:2b"]),
+            ("chat", vec!["gemma3:12b"]),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.into_iter().map(String::from).collect()))
@@ -177,6 +188,8 @@ impl App {
             chat_history: Vec::new(),
             chat_history_by_agent: HashMap::new(),
             chat_input: TextInput::new(),
+            chat_attachments: Vec::new(),
+            next_attachment_id: 1,
             current_agent: None, // Will be set in init_services
             is_loading: false,
             last_response: None,
@@ -193,10 +206,20 @@ impl App {
             model_selection_items: Vec::new(),
             connect_elevenlabs_key: String::new(),
             connect_venice_key: String::new(),
-            connect_providers: vec!["ElevenLabs".to_string(), "Venice AI".to_string()],
+            connect_brave_key: String::new(),
+            connect_providers: vec![
+                "ElevenLabs".to_string(),
+                "Venice AI".to_string(),
+                "Brave Search".to_string(),
+            ],
             connect_selected_provider: 0,
             connect_api_key_input: TextInput::new(),
             connect_current_provider: None,
+            is_brave_search_enabled: false,
+            personality_items: Vec::new(),
+            personality_selected_index: 0,
+            personality_create_input: TextInput::new(),
+            personality_name: None,
             history_conversations: Vec::new(),
             history_selected_index: 0,
             history_filter: TextInput::new(),
@@ -206,10 +229,8 @@ impl App {
             current_conversation_id: None,
             status_toast: None,
             clipboard_service: ClipboardService::new(),
-            should_open_personality_editor: false,
             personality_enabled: false,
             personality_text: None,
-            personality_name: None,
             loading_frame: 0,
             last_loading_tick: None,
             download_active: false,
@@ -229,6 +250,7 @@ impl App {
     pub fn init_services(&mut self, config: &Config) {
         self.agent_manager = Some(AgentManager::new(config));
         self.connect_venice_key = config.venice.api_key.clone();
+        self.connect_brave_key = config.brave.api_key.clone();
         if let Some(manager) = &mut self.agent_manager {
             if !self.connect_venice_key.is_empty() {
                 manager.set_venice_api_key(self.connect_venice_key.clone());
@@ -249,6 +271,9 @@ impl App {
         self.load_selected_models_from_config(config);
 
         let _ = self.load_agent("chat");
+        if !config.personality.selected.is_empty() {
+            self.personality_name = Some(config.personality.selected.clone());
+        }
     }
 
     pub fn execute_command(&mut self, command: &str) -> Result<()> {
@@ -263,8 +288,7 @@ impl App {
         }
 
         if command == "personality" {
-            self.should_open_personality_editor = true;
-            self.close_menu();
+            self.open_personality_menu()?;
             return Ok(());
         }
 
@@ -283,6 +307,11 @@ impl App {
         // Check if it's the connect command
         if command == "connect" {
             self.open_connect();
+            return Ok(());
+        }
+
+        if command == "help" {
+            self.open_help();
             return Ok(());
         }
 
@@ -344,22 +373,37 @@ impl App {
     pub fn toggle_personality(&mut self) {
         self.personality_enabled = !self.personality_enabled;
         if self.personality_enabled {
-            match crate::services::personality::read_personality() {
+            let selected_name = self
+                .personality_name
+                .clone()
+                .unwrap_or_else(crate::services::personality::default_personality_name);
+            match crate::services::personality::read_personality(&selected_name) {
                 Ok(text) => {
                     self.personality_text = Some(text);
-                    self.personality_name =
-                        crate::services::personality::personality_name().ok();
                 }
                 Err(error) => {
                     self.personality_enabled = false;
                     self.personality_text = None;
-                    self.personality_name = None;
                     self.add_system_message(&format!("Personality error: {}", error));
                 }
             }
         } else {
             self.personality_text = None;
-            self.personality_name = None;
+        }
+    }
+
+    pub fn toggle_brave_search(&mut self) {
+        self.is_brave_search_enabled = !self.is_brave_search_enabled;
+        let status = if self.is_brave_search_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        self.add_system_message(&format!("Brave search {}", status));
+        if self.is_brave_search_enabled {
+            self.show_status_toast("BRAVE SEARCH");
+        } else {
+            self.show_status_toast("SEARCH OFF");
         }
     }
 

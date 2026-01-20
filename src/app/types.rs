@@ -62,3 +62,26 @@ pub enum MessageRole {
     Assistant,
     System,
 }
+
+#[derive(Debug, Clone)]
+pub enum ChatAttachment {
+    FilePath {
+        token: String,
+        path: std::path::PathBuf,
+    },
+    ClipboardImage {
+        token: String,
+        png_bytes: Vec<u8>,
+    },
+}
+
+impl ChatAttachment {
+    #[must_use]
+    pub fn token(&self) -> &str {
+        match self {
+            ChatAttachment::FilePath { token, .. } => token,
+            ChatAttachment::ClipboardImage { token, .. } => token,
+        }
+    }
+
+}

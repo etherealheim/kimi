@@ -1,9 +1,11 @@
 mod chat;
 mod components;
 mod connect;
+mod help;
 mod history;
 mod menu;
 mod models;
+mod personality;
 mod utils;
 
 use crate::app::{App, AppMode};
@@ -12,6 +14,7 @@ use ratatui::Frame;
 pub fn render(f: &mut Frame, app: &App) {
     match app.mode {
         AppMode::Chat => chat::render_chat_view(f, app),
+        AppMode::CommandMenu => chat::render_chat_view(f, app),
         AppMode::ModelSelection => models::render_model_selection(f, app),
         AppMode::Connect => {
             // Show chat view as background, then overlay connect provider selection
@@ -24,7 +27,12 @@ pub fn render(f: &mut Frame, app: &App) {
             connect::render_api_key_input(f, app);
         }
         AppMode::History => history::render_history_view(f, app),
-        _ => chat::render_chat_view(f, app), // Fallback to chat
+        AppMode::Help => help::render_help_view(f),
+        AppMode::PersonalitySelection => personality::render_personality_view(f, app),
+        AppMode::PersonalityCreate => {
+            personality::render_personality_view(f, app);
+            personality::render_personality_create(f, app);
+        }
     }
 
     // Overlay command menu if active

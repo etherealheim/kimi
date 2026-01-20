@@ -4,31 +4,104 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-const PERSONALITY_FILE_NAME: &str = "Casca.txt";
+const DEFAULT_PERSONALITY_NAME: &str = "Casca";
+const MY_PERSONALITY_NAME: &str = "My personality";
+const PERSONALITY_EXTENSION: &str = "txt";
 
-pub fn ensure_personality_file() -> Result<PathBuf> {
-    let config_dir = ProjectDirs::from("", "", "kimi")
-        .ok_or_else(|| color_eyre::eyre::eyre!("Could not determine config directory"))?
-        .config_dir()
-        .to_path_buf();
-    fs::create_dir_all(&config_dir)?;
+pub fn default_personality_name() -> String {
+    DEFAULT_PERSONALITY_NAME.to_string()
+}
 
-    let personality_path = config_dir.join(PERSONALITY_FILE_NAME);
+pub fn my_personality_name() -> String {
+    MY_PERSONALITY_NAME.to_string()
+}
+
+pub fn list_personalities() -> Result<Vec<String>> {
+    let personality_dir = ensure_personality_dir()?;
+    let mut names = Vec::new();
+    for entry in fs::read_dir(&personality_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some(PERSONALITY_EXTENSION) {
+            continue;
+        }
+        if let Some(name) = path.file_stem().and_then(|name| name.to_str()) {
+            if name != MY_PERSONALITY_NAME {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names.sort();
+
+    if names.is_empty() {
+        let default_name = default_personality_name();
+        let _ = ensure_personality(&default_name)?;
+        return Ok(vec![default_name]);
+    }
+
+    Ok(names)
+}
+
+pub fn ensure_personality(name: &str) -> Result<PathBuf> {
+    let personality_path = personality_path(name)?;
     if !personality_path.exists() {
         fs::write(&personality_path, default_personality_template())?;
     }
-
     Ok(personality_path)
 }
 
-pub fn open_personality_in_new_terminal() -> Result<()> {
-    let personality_path = ensure_personality_file()?;
+pub fn ensure_my_personality() -> Result<PathBuf> {
+    let name = my_personality_name();
+    let personality_path = personality_path(&name)?;
+    if !personality_path.exists() {
+        fs::write(&personality_path, my_personality_template())?;
+    }
+    Ok(personality_path)
+}
+
+pub fn create_personality(name: &str) -> Result<PathBuf> {
+    let personality_path = personality_path(name)?;
+    if personality_path.exists() {
+        return Err(color_eyre::eyre::eyre!(
+            "Personality '{}' already exists",
+            name
+        ));
+    }
+    fs::write(&personality_path, default_personality_template())?;
+    Ok(personality_path)
+}
+
+pub fn delete_personality(name: &str) -> Result<()> {
+    let personality_path = personality_path(name)?;
+    if personality_path.exists() {
+        fs::remove_file(personality_path)?;
+    }
+    Ok(())
+}
+
+pub fn read_personality(name: &str) -> Result<String> {
+    let personality_path = ensure_personality(name)?;
+    Ok(fs::read_to_string(personality_path)?)
+}
+
+pub fn read_my_personality() -> Result<String> {
+    let name = my_personality_name();
+    let personality_path = ensure_my_personality()?;
+    let _ = name;
+    Ok(fs::read_to_string(personality_path)?)
+}
+
+pub fn open_personality_in_new_terminal(name: &str) -> Result<()> {
+    let personality_path = ensure_personality(name)?;
     let personality_str = personality_path.to_string_lossy().to_string();
 
     let mut attempts: Vec<(String, Vec<String>)> = Vec::new();
 
     if let Ok(terminal) = std::env::var("TERMINAL") {
-        attempts.push((terminal, vec!["-e".to_string(), "micro".to_string(), personality_str.clone()]));
+        attempts.push((
+            terminal,
+            vec!["-e".to_string(), "micro".to_string(), personality_str.clone()],
+        ));
     }
 
     attempts.extend([
@@ -78,8 +151,8 @@ pub fn open_personality_in_new_terminal() -> Result<()> {
     ))
 }
 
-pub fn open_personality_in_place() -> Result<()> {
-    let personality_path = ensure_personality_file()?;
+pub fn open_personality_in_place(name: &str) -> Result<()> {
+    let personality_path = ensure_personality(name)?;
     let status = Command::new("micro").arg(personality_path).status()?;
     if status.success() {
         Ok(())
@@ -88,19 +161,25 @@ pub fn open_personality_in_place() -> Result<()> {
     }
 }
 
-#[allow(dead_code)]
-pub fn read_personality() -> Result<String> {
-    let personality_path = ensure_personality_file()?;
-    Ok(fs::read_to_string(personality_path)?)
+fn ensure_personality_dir() -> Result<PathBuf> {
+    let config_dir = ProjectDirs::from("", "", "kimi")
+        .ok_or_else(|| color_eyre::eyre::eyre!("Could not determine config directory"))?
+        .config_dir()
+        .to_path_buf();
+    let personality_dir = config_dir.join("personalities");
+    fs::create_dir_all(&personality_dir)?;
+    Ok(personality_dir)
 }
 
-pub fn personality_name() -> Result<String> {
-    let personality_path = ensure_personality_file()?;
-    personality_path
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .map(String::from)
-        .ok_or_else(|| color_eyre::eyre::eyre!("Invalid personality file name"))
+fn personality_path(name: &str) -> Result<PathBuf> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(color_eyre::eyre::eyre!(
+            "Personality name cannot be empty"
+        ));
+    }
+    let personality_dir = ensure_personality_dir()?;
+    Ok(personality_dir.join(format!("{}.{}", trimmed, PERSONALITY_EXTENSION)))
 }
 
 fn try_spawn_terminal(program: &str, args: &[String]) -> bool {
@@ -112,6 +191,14 @@ fn default_personality_template() -> String {
         "You are Kimi, a helpful AI assistant.",
         "Be concise, friendly, and direct.",
         "Keep responses short and to the point unless asked for details.",
+    ]
+    .join("\n")
+}
+
+fn my_personality_template() -> String {
+    [
+        "This is context about the user.",
+        "Add preferences, location, tone, and other helpful details.",
     ]
     .join("\n")
 }

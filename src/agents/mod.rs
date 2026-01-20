@@ -123,6 +123,7 @@ impl AgentManager {
 pub struct ChatMessage {
     pub role: MessageRole,
     pub content: String,
+    pub images: Vec<String>,
 }
 
 /// Role of a message in the conversation
@@ -138,6 +139,7 @@ impl ChatMessage {
         Self {
             role: MessageRole::System,
             content: content.into(),
+            images: Vec::new(),
         }
     }
 
@@ -145,6 +147,7 @@ impl ChatMessage {
         Self {
             role: MessageRole::User,
             content: content.into(),
+            images: Vec::new(),
         }
     }
 
@@ -152,6 +155,7 @@ impl ChatMessage {
         Self {
             role: MessageRole::Assistant,
             content: content.into(),
+            images: Vec::new(),
         }
     }
 }

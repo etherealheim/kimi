@@ -93,8 +93,14 @@ fn handle_cli_args(args: &[String]) -> Result<()> {
             println!("{}", weather_json);
         }
         "personality" => {
-            if services::personality::open_personality_in_new_terminal().is_err() {
-                services::personality::open_personality_in_place()?;
+            let config = config::Config::load()?;
+            let selected = if config.personality.selected.is_empty() {
+                services::personality::default_personality_name()
+            } else {
+                config.personality.selected
+            };
+            if services::personality::open_personality_in_new_terminal(&selected).is_err() {
+                services::personality::open_personality_in_place(&selected)?;
             }
         }
         cmd_str => {
@@ -139,13 +145,6 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
         tick_summary_animation(app);
         app.clear_expired_status_toast();
 
-        if app.should_open_personality_editor {
-            app.should_open_personality_editor = false;
-            if let Err(error) = services::personality::open_personality_in_new_terminal() {
-                app.add_system_message(&format!("Personality editor error: {}", error));
-            }
-        }
-
         terminal.draw(|f| ui::render(f, app))?;
 
         if app.should_quit {
@@ -183,6 +182,13 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                         AppMode::Connect => handle_connect_mode(app, key.code)?,
                         AppMode::ApiKeyInput => handle_api_key_input_mode(app, key.code)?,
                         AppMode::History => handle_history_mode(app, key.code)?,
+                        AppMode::Help => handle_help_mode(app, key.code)?,
+                        AppMode::PersonalitySelection => {
+                            handle_personality_selection_mode(app, key.code)?
+                        }
+                        AppMode::PersonalityCreate => {
+                            handle_personality_create_mode(app, key.code)?
+                        }
                     }
                 }
                 Event::Mouse(mouse) => {
@@ -288,7 +294,14 @@ fn handle_command_menu(app: &mut App, key_code: KeyCode) -> Result<()> {
         }
         KeyCode::Up => app.previous_item(),
         KeyCode::Down => app.next_item(),
-        KeyCode::Char(character) => app.add_input_char(character),
+        KeyCode::Char(character) => {
+            app.add_input_char(character);
+            let input_snapshot = app.input.clone();
+            if app.try_add_image_attachment_from_text(input_snapshot.as_str())? {
+                app.show_status_toast("IMAGE ADDED");
+                app.close_menu();
+            }
+        }
         KeyCode::Backspace => app.remove_input_char(),
         KeyCode::Left
         | KeyCode::Right
@@ -444,8 +457,14 @@ fn handle_chat_mode(app: &mut App, key_code: KeyCode, modifiers: KeyModifiers) -
                 app.show_status_toast("TTS INACTIVE");
             }
         }
+        (KeyCode::Char('s'), key_modifiers) if key_modifiers.contains(KeyModifiers::CONTROL) => {
+            app.toggle_brave_search();
+        }
         (KeyCode::Char('p'), key_modifiers) if key_modifiers.contains(KeyModifiers::CONTROL) => {
             app.toggle_personality();
+        }
+        (KeyCode::Char('v'), key_modifiers) if key_modifiers.contains(KeyModifiers::CONTROL) => {
+            app.handle_chat_clipboard_image()?;
         }
         (KeyCode::Tab, _) => {
             // Rotate between chat and translate agents
@@ -544,14 +563,15 @@ fn handle_paste(app: &mut App, paste: &str) -> Result<()> {
 
     match app.mode {
         AppMode::CommandMenu => {
+            if app.handle_command_menu_paste(&text)? {
+                return Ok(());
+            }
             for character in text.chars() {
                 app.add_input_char(character);
             }
         }
         AppMode::Chat => {
-            for character in text.chars() {
-                app.add_chat_input_char(character);
-            }
+            app.handle_chat_paste(&text)?;
         }
         AppMode::ApiKeyInput => {
             for character in text.chars() {
@@ -565,7 +585,12 @@ fn handle_paste(app: &mut App, paste: &str) -> Result<()> {
                 }
             }
         }
-        AppMode::ModelSelection | AppMode::Connect => {}
+        AppMode::PersonalityCreate => {
+            for character in text.chars() {
+                app.add_personality_char(character);
+            }
+        }
+        AppMode::ModelSelection | AppMode::Connect | AppMode::Help | AppMode::PersonalitySelection => {}
     }
 
     Ok(())
@@ -663,6 +688,108 @@ fn handle_history_mode(app: &mut App, key_code: KeyCode) -> Result<()> {
             | KeyCode::Media(_)
             | KeyCode::Modifier(_) => {}
         }
+    }
+    Ok(())
+}
+
+fn handle_help_mode(app: &mut App, key_code: KeyCode) -> Result<()> {
+    match key_code {
+        KeyCode::Esc => app.close_help(),
+        KeyCode::Char('q') => app.close_help(),
+        KeyCode::Enter
+        | KeyCode::Backspace
+        | KeyCode::Up
+        | KeyCode::Down
+        | KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Home
+        | KeyCode::End
+        | KeyCode::PageUp
+        | KeyCode::PageDown
+        | KeyCode::Tab
+        | KeyCode::BackTab
+        | KeyCode::Delete
+        | KeyCode::Insert
+        | KeyCode::F(_)
+        | KeyCode::Char(_)
+        | KeyCode::Null
+        | KeyCode::CapsLock
+        | KeyCode::ScrollLock
+        | KeyCode::NumLock
+        | KeyCode::PrintScreen
+        | KeyCode::Pause
+        | KeyCode::Menu
+        | KeyCode::KeypadBegin
+        | KeyCode::Media(_)
+        | KeyCode::Modifier(_) => {}
+    }
+    Ok(())
+}
+
+fn handle_personality_selection_mode(app: &mut App, key_code: KeyCode) -> Result<()> {
+    match key_code {
+        KeyCode::Esc => app.close_personality_menu(),
+        KeyCode::Up => app.previous_personality(),
+        KeyCode::Down => app.next_personality(),
+        KeyCode::Enter => app.select_personality()?,
+        KeyCode::Char('n') | KeyCode::Char('N') => app.open_personality_create(),
+        KeyCode::Char('e') | KeyCode::Char('E') => app.edit_selected_personality()?,
+        KeyCode::Delete => app.delete_selected_personality()?,
+        KeyCode::Backspace
+        | KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Home
+        | KeyCode::End
+        | KeyCode::PageUp
+        | KeyCode::PageDown
+        | KeyCode::Tab
+        | KeyCode::BackTab
+        | KeyCode::Insert
+        | KeyCode::F(_)
+        | KeyCode::Char(_)
+        | KeyCode::Null
+        | KeyCode::CapsLock
+        | KeyCode::ScrollLock
+        | KeyCode::NumLock
+        | KeyCode::PrintScreen
+        | KeyCode::Pause
+        | KeyCode::Menu
+        | KeyCode::KeypadBegin
+        | KeyCode::Media(_)
+        | KeyCode::Modifier(_) => {}
+    }
+    Ok(())
+}
+
+fn handle_personality_create_mode(app: &mut App, key_code: KeyCode) -> Result<()> {
+    match key_code {
+        KeyCode::Esc => app.open_personality_menu()?,
+        KeyCode::Enter => app.create_personality()?,
+        KeyCode::Char(character) => app.add_personality_char(character),
+        KeyCode::Backspace => app.remove_personality_char(),
+        KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Up
+        | KeyCode::Down
+        | KeyCode::Home
+        | KeyCode::End
+        | KeyCode::PageUp
+        | KeyCode::PageDown
+        | KeyCode::Tab
+        | KeyCode::BackTab
+        | KeyCode::Delete
+        | KeyCode::Insert
+        | KeyCode::F(_)
+        | KeyCode::Null
+        | KeyCode::CapsLock
+        | KeyCode::ScrollLock
+        | KeyCode::NumLock
+        | KeyCode::PrintScreen
+        | KeyCode::Pause
+        | KeyCode::Menu
+        | KeyCode::KeypadBegin
+        | KeyCode::Media(_)
+        | KeyCode::Modifier(_) => {}
     }
     Ok(())
 }

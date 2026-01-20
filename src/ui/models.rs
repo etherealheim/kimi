@@ -167,7 +167,7 @@ fn render_model_footer(f: &mut Frame, area: Rect) {
         f,
         area,
         "MODELS",
-        &[("Enter", "toggle"), ("↑↓", "navigate"), ("Esc", "done")],
+        &[("Enter", "select"), ("↑↓", "navigate"), ("Esc", "back")],
         &[],
     );
 }
