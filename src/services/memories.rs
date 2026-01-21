@@ -408,14 +408,3 @@ fn default_memories_template() -> String {
     ]
     .join("\n")
 }
-
-fn format_memory_blocks(blocks: &MemoryBlocks) -> String {
-    blocks.to_string()
-}
-
-pub fn merge_memories(existing: &str, new_content: &str) -> String {
-    let existing_blocks = parse_memory_blocks(existing);
-    let new_blocks = parse_memory_blocks(new_content);
-    let merged = merge_memory_blocks(existing_blocks, new_blocks);
-    format_memory_blocks(&merged)
-}
