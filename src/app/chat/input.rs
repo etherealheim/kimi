@@ -87,6 +87,26 @@ impl App {
         self.chat_input.remove_char();
     }
 
+    pub fn delete_chat_input_char(&mut self) {
+        self.chat_input.delete_char();
+    }
+
+    pub fn move_chat_input_left(&mut self) {
+        self.chat_input.move_left();
+    }
+
+    pub fn move_chat_input_right(&mut self) {
+        self.chat_input.move_right();
+    }
+
+    pub fn move_chat_input_start(&mut self) {
+        self.chat_input.move_to_start();
+    }
+
+    pub fn move_chat_input_end(&mut self) {
+        self.chat_input.move_to_end();
+    }
+
     pub fn add_system_message(&mut self, content: &str) {
         self.chat_history.push(ChatMessage {
             role: MessageRole::System,

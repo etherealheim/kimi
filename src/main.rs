@@ -481,8 +481,10 @@ fn handle_chat_mode(app: &mut App, key_code: KeyCode, modifiers: KeyModifiers) -
         }
         (KeyCode::PageUp, _) => app.scroll_chat_up_page(),
         (KeyCode::PageDown, _) => app.scroll_chat_down_page(),
-        (KeyCode::End, _) => app.jump_to_bottom(),
-        (KeyCode::Home, _) => app.jump_to_top(),
+        (KeyCode::End, _) if app.chat_input.is_empty() => app.jump_to_bottom(),
+        (KeyCode::Home, _) if app.chat_input.is_empty() => app.jump_to_top(),
+        (KeyCode::End, _) => app.move_chat_input_end(),
+        (KeyCode::Home, _) => app.move_chat_input_start(),
         (KeyCode::Char('/'), key_modifiers)
             if key_modifiers == KeyModifiers::NONE && app.chat_input.is_empty() =>
         {
@@ -495,12 +497,14 @@ fn handle_chat_mode(app: &mut App, key_code: KeyCode, modifiers: KeyModifiers) -
         }
         (KeyCode::Char(character), _) => app.add_chat_input_char(character),
         (KeyCode::Backspace, _) => app.remove_chat_input_char(),
+        (KeyCode::Delete, _) => app.delete_chat_input_char(),
+        (KeyCode::Left, _) if !app.chat_input.is_empty() => app.move_chat_input_left(),
+        (KeyCode::Right, _) if !app.chat_input.is_empty() => app.move_chat_input_right(),
         (KeyCode::Left, _)
         | (KeyCode::Right, _)
         | (KeyCode::Up, _)
         | (KeyCode::Down, _)
         | (KeyCode::BackTab, _)
-        | (KeyCode::Delete, _)
         | (KeyCode::Insert, _)
         | (KeyCode::F(_), _)
         | (KeyCode::Null, _)

@@ -15,6 +15,7 @@ pub struct TextInputConfig<'a> {
     pub title_style: Option<Style>,
     pub placeholder: Option<&'a str>,
     pub show_cursor: bool,
+    pub cursor_position: Option<usize>,
 }
 
 impl<'a> TextInputConfig<'a> {
@@ -26,6 +27,7 @@ impl<'a> TextInputConfig<'a> {
             title_style: None,
             placeholder: None,
             show_cursor: true,
+            cursor_position: None,
         }
     }
 
@@ -46,6 +48,12 @@ impl<'a> TextInputConfig<'a> {
         self.title_style = Some(title_style);
         self
     }
+
+    /// Sets cursor position (character index)
+    pub fn with_cursor_position(mut self, cursor_position: usize) -> Self {
+        self.cursor_position = Some(cursor_position);
+        self
+    }
 }
 
 /// Renders a text input field with cursor indicator
@@ -64,14 +72,30 @@ pub fn render_text_input(frame: &mut Frame, area: Rect, config: TextInputConfig)
             ),
         ])
     } else {
+        let inner_width = area.width.saturating_sub(2) as usize;
+        let prefix_width = 2;
+        let cursor_width = if config.show_cursor { 1 } else { 0 };
+        let available_width = inner_width.saturating_sub(prefix_width + cursor_width).max(1);
+        let cursor_index = config
+            .cursor_position
+            .unwrap_or_else(|| config.content.chars().count());
+        let (start, end) = visible_window(config.content, cursor_index, available_width);
+        let visible_content = slice_by_chars(config.content, start, end);
+        let relative_cursor = cursor_index.saturating_sub(start).min(visible_content.chars().count());
+        let before = slice_by_chars(&visible_content, 0, relative_cursor);
+        let after = slice_by_chars(&visible_content, relative_cursor, visible_content.chars().count());
+
         let mut spans = vec![Span::styled("> ", Style::default().fg(Color::Cyan))];
-        spans.extend(build_input_spans(config.content));
-        spans.push(Span::styled(
-            cursor_indicator,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::SLOW_BLINK),
-        ));
+        spans.extend(build_input_spans(&before));
+        if config.show_cursor {
+            spans.push(Span::styled(
+                cursor_indicator,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ));
+        }
+        spans.extend(build_input_spans(&after));
         Line::from(spans)
     };
 
@@ -94,14 +118,35 @@ pub fn render_text_input(frame: &mut Frame, area: Rect, config: TextInputConfig)
     );
 }
 
-fn build_input_spans(content: &str) -> Vec<Span<'_>> {
+fn visible_window(content: &str, cursor: usize, width: usize) -> (usize, usize) {
+    let length = content.chars().count();
+    let cursor = cursor.min(length);
+    if length <= width {
+        return (0, length);
+    }
+    let mut start = cursor.saturating_sub(width.saturating_sub(1));
+    if start + width > length {
+        start = length.saturating_sub(width);
+    }
+    (start, start + width)
+}
+
+fn slice_by_chars(value: &str, start: usize, end: usize) -> String {
+    value
+        .chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect()
+}
+
+fn build_input_spans(content: &str) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut index = 0;
     while let Some(start_offset) = content[index..].find("[[image:") {
         let start_index = index + start_offset;
         if start_index > index {
             spans.push(Span::styled(
-                &content[index..start_index],
+                content[index..start_index].to_string(),
                 Style::default().fg(Color::White),
             ));
         }
@@ -120,7 +165,7 @@ fn build_input_spans(content: &str) -> Vec<Span<'_>> {
             continue;
         }
         spans.push(Span::styled(
-            &content[start_index..],
+            content[start_index..].to_string(),
             Style::default().fg(Color::White),
         ));
         return spans;
@@ -128,7 +173,7 @@ fn build_input_spans(content: &str) -> Vec<Span<'_>> {
 
     if index < content.len() {
         spans.push(Span::styled(
-            &content[index..],
+            content[index..].to_string(),
             Style::default().fg(Color::White),
         ));
     }

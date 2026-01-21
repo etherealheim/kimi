@@ -173,6 +173,7 @@ cargo clippy -- -D warnings  # Strict linting
 cargo test            # Run tests
 cargo build           # Verify build
 ```
+Also bump `Cargo.toml` version before pushing changes so the header version stays current.
 
 ### Quality Checklist
 - ✓ No functions with 3+ parameters (without grouping)

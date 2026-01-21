@@ -43,6 +43,7 @@ fn render_chat_header(f: &mut Frame, app: &App, area: Rect) {
         "Chat"
     };
 
+    let version_text = format!("v{}", env!("CARGO_PKG_VERSION"));
     let title_spans = vec![
         Span::raw(" "),
         Span::styled(
@@ -53,6 +54,8 @@ fn render_chat_header(f: &mut Frame, app: &App, area: Rect) {
         ),
         Span::styled(" ", Style::default().fg(Color::DarkGray)),
         Span::styled(agent_mode, Style::default().fg(Color::Cyan)),
+        Span::styled(" ", Style::default().fg(Color::DarkGray)),
+        Span::styled(version_text, Style::default().fg(Color::DarkGray)),
     ];
 
     let model_name = app
@@ -144,58 +147,25 @@ impl MessageStyles {
 }
 
 /// Adds welcome message lines when chat is empty
-fn add_welcome_message(lines: &mut Vec<Line>) {
+fn add_welcome_message(lines: &mut Vec<Line>, max_width: usize) {
+    let welcome_style = Style::default().fg(Color::DarkGray);
+    let paragraphs = [
+        "Hi! I'm Kimi, your helpful companion.",
+        "I can translate languages, switch up my personality, read text aloud, and download videos.",
+        "What is on your mind today?",
+    ];
+
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("  Hi! I'm ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            "Kimi",
-            Style::default()
-                .fg(Color::Magenta)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(", your helpful companion.", Style::default().fg(Color::DarkGray)),
-    ]));
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("  I can ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            "translate",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" languages, switch up my ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            "personality",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(", ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            "read",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" text aloud and ", Style::default().fg(Color::DarkGray)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            "download",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" videos.", Style::default().fg(Color::DarkGray)),
-    ]));
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![Span::styled(
-        "  What is on your mind today?",
-        Style::default().fg(Color::DarkGray),
-    )]));
+    for paragraph in paragraphs {
+        let wrapped = wrap_text(paragraph, max_width, 1);
+        for line in wrapped {
+            lines.push(Line::from(vec![
+                Span::styled("  ", welcome_style),
+                Span::styled(line, welcome_style),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
 }
 
 /// Renders a system message (compact, subtle styling)
@@ -345,7 +315,7 @@ fn render_chat_history(frame: &mut Frame, app: &App, area: Rect) {
 
     // Welcome message if chat is empty
     if app.chat_history.is_empty() && !app.is_loading {
-        add_welcome_message(&mut lines);
+        add_welcome_message(&mut lines, max_content_width);
     }
 
     // Build all message lines
@@ -566,7 +536,8 @@ fn render_chat_input(frame: &mut Frame, app: &App, area: Rect) {
     let config = components::TextInputConfig::new(app.chat_input.content(), " Message ")
         .with_placeholder(placeholder_text)
         .with_cursor_visible(!app.is_loading)
-        .with_title_style(Style::default().fg(Color::White));
+        .with_title_style(Style::default().fg(Color::White))
+        .with_cursor_position(app.chat_input.cursor_position());
 
     components::render_text_input(frame, area, config);
 }
