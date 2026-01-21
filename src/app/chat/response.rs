@@ -13,6 +13,7 @@ impl App {
                 AgentEvent::Response(response) => {
                     self.is_loading = false;
                     self.is_searching = false;
+                    self.is_analyzing = false;
                     self.last_response = Some(response.clone());
                     let display_name = if self.personality_enabled {
                         self.personality_name.clone()
@@ -41,6 +42,7 @@ impl App {
                 AgentEvent::Error(error) => {
                     self.is_loading = false;
                     self.is_searching = false;
+                    self.is_analyzing = false;
                     self.chat_history.push(ChatMessage {
                         role: MessageRole::System,
                         content: format!("Error: {}", error),

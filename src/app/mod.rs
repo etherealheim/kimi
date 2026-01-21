@@ -72,6 +72,7 @@ pub struct App {
     pub current_agent: Option<Agent>,
     pub is_loading: bool,
     pub is_searching: bool,
+    pub is_analyzing: bool,
     pub pending_search_notice: Option<String>,
     pub last_response: Option<String>,
     pub agent_manager: Option<AgentManager>,
@@ -200,6 +201,7 @@ impl App {
             current_agent: None, // Will be set in init_services
             is_loading: false,
             is_searching: false,
+            is_analyzing: false,
             pending_search_notice: None,
             last_response: None,
             agent_manager: None,

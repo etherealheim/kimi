@@ -54,12 +54,14 @@ impl App {
         self.pending_search_notice = None;
         self.is_loading = true;
         self.is_searching = self.should_mark_searching(&user_message);
+        self.is_analyzing = !self.chat_attachments.is_empty();
 
         let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
         let mut messages = self.build_agent_messages(&agent.system_prompt);
         if let Some(notice) = self.pending_search_notice.take() {
             self.is_loading = false;
             self.is_searching = false;
+            self.is_analyzing = false;
             self.add_assistant_message(&notice);
             return Ok(());
         }

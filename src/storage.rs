@@ -71,13 +71,10 @@ pub struct StorageManager {
 impl StorageManager {
     /// Creates a new storage manager and initializes the database
     pub fn new() -> Result<Self> {
-        let proj_dirs = directories::ProjectDirs::from("", "", "kimi")
-            .ok_or_else(|| color_eyre::eyre::eyre!("Could not determine config directory"))?;
-
-        let data_dir = proj_dirs.data_dir();
-        std::fs::create_dir_all(data_dir)?;
-
-        let db_path = data_dir.join("history.db");
+        let project_data_dir = Self::project_data_dir()?;
+        std::fs::create_dir_all(&project_data_dir)?;
+        let db_path = project_data_dir.join("history.db");
+        Self::migrate_legacy_db(&db_path)?;
 
         let manager = Self { db_path };
         manager.init_db()?;
@@ -119,6 +116,29 @@ impl StorageManager {
 
         self.ensure_column(&conn, "conversations", "detailed_summary", "TEXT")?;
         self.ensure_column(&conn, "messages", "display_name", "TEXT")?;
+        Ok(())
+    }
+
+    fn project_data_dir() -> Result<PathBuf> {
+        let current_dir = std::env::current_dir()?;
+        Ok(current_dir.join("data"))
+    }
+
+    fn legacy_db_path() -> Result<PathBuf> {
+        let proj_dirs = directories::ProjectDirs::from("", "", "kimi")
+            .ok_or_else(|| color_eyre::eyre::eyre!("Could not determine config directory"))?;
+        Ok(proj_dirs.data_dir().join("history.db"))
+    }
+
+    fn migrate_legacy_db(target_path: &PathBuf) -> Result<()> {
+        if target_path.exists() {
+            return Ok(());
+        }
+        let legacy_path = Self::legacy_db_path()?;
+        if !legacy_path.exists() {
+            return Ok(());
+        }
+        let _ = std::fs::copy(&legacy_path, target_path);
         Ok(())
     }
 

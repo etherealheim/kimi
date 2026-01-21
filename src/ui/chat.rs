@@ -377,7 +377,13 @@ fn render_chat_history(frame: &mut Frame, app: &App, area: Rect) {
     // Add loading indicator if processing
     if app.is_loading {
         add_spacing(&mut lines, 1);
-        let loading_label = if app.is_searching { "searching" } else { "thinking" };
+        let loading_label = if app.is_analyzing {
+            "analyzing"
+        } else if app.is_searching {
+            "searching"
+        } else {
+            "thinking"
+        };
         add_loading_indicator(&mut lines, app, loading_label, app.loading_frame, None);
     }
 
@@ -546,7 +552,9 @@ fn add_spacing(lines: &mut Vec<Line>, count: usize) {
 
 fn render_chat_input(frame: &mut Frame, app: &App, area: Rect) {
     let placeholder_text = if app.is_loading {
-        if app.is_searching {
+        if app.is_analyzing {
+            "Analyzing..."
+        } else if app.is_searching {
             "Searching..."
         } else {
             "Waiting for response..."
