@@ -183,6 +183,7 @@ Also bump `Cargo.toml` version before pushing changes so the header version stay
 - ✓ No direct array indexing
 - ✓ All enum matches exhaustive
 - ✓ All clippy warnings resolved
+- ✓ Fix warnings and errors; do not silence or hide them
 
 ## Architecture
 
@@ -202,7 +203,7 @@ src/
 │   ├── menu.rs      # Menu view
 │   └── components.rs # Reusable UI components
 ├── agents/          # AI agent backends
-├── services/        # External services (TTS, etc)
+├── services/        # External services (TTS, Obsidian, dates parser, etc)
 └── storage.rs       # Persistence layer
 ```
 

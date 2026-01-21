@@ -1453,7 +1453,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kimi-the-rust"
+name = "kimi"
 version = "0.1.0"
 dependencies = [
  "arboard",

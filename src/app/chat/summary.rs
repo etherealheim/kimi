@@ -1,7 +1,10 @@
 use crate::agents::ChatMessage as AgentChatMessage;
 use crate::app::types::MessageRole;
 use crate::app::{AgentEvent, App};
+use crate::storage::ConversationMessage;
 use color_eyre::Result;
+
+pub(crate) const PENDING_SUMMARY_LABEL: &str = "Generating";
 
 impl App {
     pub(crate) fn parse_summary_pair(summary: &str) -> (String, String) {
@@ -63,6 +66,51 @@ impl App {
             .join(" ")
     }
 
+    pub(crate) fn build_conversation_messages(&self) -> Vec<ConversationMessage> {
+        self.chat_history
+            .iter()
+            .map(|message| {
+                let role = match message.role {
+                    MessageRole::User => "User",
+                    MessageRole::Assistant => "Assistant",
+                    MessageRole::System => "System",
+                };
+                ConversationMessage {
+                    role: role.to_string(),
+                    content: message.content.clone(),
+                    timestamp: message.timestamp.clone(),
+                    display_name: message.display_name.clone(),
+                }
+            })
+            .collect()
+    }
+
+    fn save_pending_conversation(&mut self, messages: &[ConversationMessage]) -> Result<()> {
+        let Some(storage) = &self.storage else {
+            return Ok(());
+        };
+        let agent_name = self
+            .current_agent
+            .as_ref()
+            .map_or("unknown", |agent| agent.name.as_str());
+        if let Some(conversation_id) = self.current_conversation_id {
+            storage.update_conversation(
+                conversation_id,
+                PENDING_SUMMARY_LABEL,
+                PENDING_SUMMARY_LABEL,
+                messages,
+            )?;
+        } else {
+            let data = crate::storage::ConversationData::new(agent_name, messages)
+                .with_summary(PENDING_SUMMARY_LABEL)
+                .with_detailed_summary(PENDING_SUMMARY_LABEL);
+            if let Ok(conversation_id) = storage.save_conversation(data) {
+                self.current_conversation_id = Some(conversation_id);
+            }
+        }
+        Ok(())
+    }
+
     /// Spawns a background thread to generate conversation summary
     fn spawn_summary_generation_thread(
         agent: crate::agents::Agent,
@@ -109,22 +157,24 @@ Conversation: {}",
             "Extract persistent user memories from this conversation.\n\
 Prefer specific entities over generic categories. If a title or proper noun is mentioned, include it.\n\
 Examples: use \"finished Elden Ring\" instead of \"finishing games\".\n\
+IMPORTANT: If you find the same item with multiple contexts, combine them into ONE line with comma-separated tags.\n\
+Example: <Arch Linux | tags=os,linux,system | source=explicit | confidence=high>\n\
 Return only blocks in the exact format below and nothing else.\n\
 Use empty output if nothing is relevant.\n\
 [context:likes]\n\
-<value | context=general | source=explicit | confidence=high>\n\
+<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
 [context:dislikes]\n\
-<value | context=general | source=explicit | confidence=high>\n\
+<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
 [context:location]\n\
-<value | context=general | source=explicit | confidence=high>\n\
+<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
 [context:timezone]\n\
-<value | context=general | source=explicit | confidence=high>\n\
+<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
 [context:tools]\n\
-<value | context=general | source=explicit | confidence=high>\n\
+<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
 [context:projects]\n\
-<value | context=general | source=explicit | confidence=high>\n\
+<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
 [context:topics]\n\
-<value | context=general | source=explicit | confidence=high>\n\n\
+<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\n\
 Conversation: {}",
             context.chars().take(600).collect::<String>()
         );
@@ -180,22 +230,23 @@ Conversation: {}",
 Only capture stable, user-specific details (preferences, tools, projects, topics, location, timezone).\n\
 Prefer specific entities over generic categories. If a title or proper noun is mentioned, include it.\n\
 Examples: use \"finished Elden Ring\" instead of \"finishing games\".\n\
+IMPORTANT: Use comma-separated tags to capture different contexts. Example: <Arch Linux | tags=os,linux,system>\n\
 If nothing is worth saving, return empty output.\n\
 Return only blocks in the exact format below and nothing else.\n\
 [context:likes]\n\
-<value | context=general | source=explicit | confidence=high>\n\
+<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
 [context:dislikes]\n\
-<value | context=general | source=explicit | confidence=high>\n\
+<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
 [context:location]\n\
-<value | context=general | source=explicit | confidence=high>\n\
+<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
 [context:timezone]\n\
-<value | context=general | source=explicit | confidence=high>\n\
+<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
 [context:tools]\n\
-<value | context=general | source=explicit | confidence=high>\n\
+<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
 [context:projects]\n\
-<value | context=general | source=explicit | confidence=high>\n\
+<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
 [context:topics]\n\
-<value | context=general | source=explicit | confidence=high>\n\n\
+<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\n\
 Conversation: {}",
             job.context.chars().take(400).collect::<String>()
         );
@@ -224,6 +275,8 @@ Conversation: {}",
         self.summary_active = true;
 
         let context = self.build_summary_context();
+        let messages = self.build_conversation_messages();
+        let _ = self.save_pending_conversation(&messages);
         let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
 
         Self::spawn_summary_generation_thread(
@@ -234,6 +287,7 @@ Conversation: {}",
         );
         Self::spawn_memory_extraction_thread(agent, manager, context, agent_tx);
 
+        self.open_history();
         Ok(())
     }
 }

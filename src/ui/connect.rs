@@ -9,6 +9,7 @@ use ratatui::{
 use crate::app::App;
 use crate::ui::components;
 use crate::ui::utils::centered_rect;
+use std::path::Path;
 
 /// Render provider selection modal
 pub fn render_connect_providers(f: &mut Frame, app: &App) {
@@ -60,9 +61,24 @@ pub fn render_connect_providers(f: &mut Frame, app: &App) {
                 "Brave Search" if !app.connect_brave_key.is_empty() => {
                     ("configured", Style::default().fg(Color::Green), "●")
                 }
+                "Obsidian" if !app.connect_obsidian_vault.trim().is_empty() => {
+                    let is_valid = Path::new(&app.connect_obsidian_vault).is_dir();
+                    let status_style = if is_valid {
+                        Style::default().fg(Color::Green)
+                    } else {
+                        Style::default().fg(Color::Yellow)
+                    };
+                    let status_text = if is_valid {
+                        "configured"
+                    } else {
+                        "invalid path"
+                    };
+                    (status_text, status_style, "●")
+                }
                 "ElevenLabs" | "Venice AI" | "Brave Search" => {
                     ("not configured", Style::default().fg(Color::DarkGray), "○")
                 }
+                "Obsidian" => ("not configured", Style::default().fg(Color::DarkGray), "○"),
                 _ => ("unknown", Style::default().fg(Color::Red), "?"),
             };
 
@@ -143,27 +159,35 @@ pub fn render_api_key_input(f: &mut Frame, app: &App) {
         return;
     };
 
-    // API key input (masked)
-    let key_len = app.connect_api_key_input.content().len();
-    let masked = if key_len == 0 {
-        String::new()
+    let input_value = app.connect_api_key_input.content();
+    let key_len = input_value.len();
+    let (display_value, title, placeholder) = if provider_name == "Obsidian" {
+        (
+            input_value.to_string(),
+            " Vault Path ".to_string(),
+            "Path to your Obsidian vault...",
+        )
     } else {
-        let masked_value = "*".repeat(key_len.min(40));
-        if key_len > 40 {
-            format!("{}...", masked_value)
+        let masked = if key_len == 0 {
+            String::new()
         } else {
-            masked_value
-        }
+            let masked_value = "*".repeat(key_len.min(40));
+            if key_len > 40 {
+                format!("{}...", masked_value)
+            } else {
+                masked_value
+            }
+        };
+        let title = if key_len > 0 {
+            format!(" API Key ({} chars) ", key_len)
+        } else {
+            " API Key ".to_string()
+        };
+        (masked, title, "Paste or type your API key...")
     };
 
-    let title = if key_len > 0 {
-        format!(" API Key ({} chars) ", key_len)
-    } else {
-        " API Key ".to_string()
-    };
-
-    let config = components::TextInputConfig::new(&masked, &title)
-        .with_placeholder("Paste or type your API key...")
+    let config = components::TextInputConfig::new(&display_value, &title)
+        .with_placeholder(placeholder)
         .with_cursor_visible(true)
         .with_title_style(Style::default().fg(Color::White));
     components::render_text_input(f, *input_area, config);
@@ -218,6 +242,29 @@ pub fn render_api_key_input(f: &mut Frame, app: &App) {
                     Style::default()
                         .fg(Color::Blue)
                         .add_modifier(Modifier::UNDERLINED),
+                ),
+            ]),
+        ],
+        "Obsidian" => vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  ● ", Style::default().fg(Color::Green)),
+                Span::styled(
+                    "Obsidian",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    " - Local vault for personal context",
+                    Style::default().fg(Color::White),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("    Example: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "/Users/you/Documents/Obsidian",
+                    Style::default().fg(Color::Blue),
                 ),
             ]),
         ],

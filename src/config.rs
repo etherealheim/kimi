@@ -15,6 +15,8 @@ pub struct Config {
     #[serde(default)]
     pub brave: BraveConfig,
     #[serde(default)]
+    pub obsidian: ObsidianConfig,
+    #[serde(default)]
     pub personality: PersonalityConfig,
     pub agents: HashMap<String, AgentConfig>,
 }
@@ -24,6 +26,7 @@ struct LocalConfig {
     elevenlabs: Option<LocalElevenLabsConfig>,
     venice: Option<LocalApiConfig>,
     brave: Option<LocalApiConfig>,
+    obsidian: Option<LocalObsidianConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,6 +37,11 @@ struct LocalElevenLabsConfig {
 #[derive(Debug, Deserialize)]
 struct LocalApiConfig {
     api_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalObsidianConfig {
+    vault_path: Option<String>,
 }
 
 /// Ollama backend configuration
@@ -60,6 +68,12 @@ pub struct VeniceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BraveConfig {
     pub api_key: String,
+}
+
+/// Obsidian vault configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ObsidianConfig {
+    pub vault_path: String,
 }
 
 /// Personality configuration
@@ -117,6 +131,9 @@ impl Default for Config {
             },
             brave: BraveConfig {
                 api_key: String::new(),
+            },
+            obsidian: ObsidianConfig {
+                vault_path: String::new(),
             },
             personality: PersonalityConfig {
                 selected: "Casca".to_string(),
@@ -210,6 +227,13 @@ impl Config {
             if let Some(api_key) = &brave.api_key {
                 if !api_key.trim().is_empty() {
                     config.brave.api_key = api_key.clone();
+                }
+            }
+        }
+        if let Some(obsidian) = &local.obsidian {
+            if let Some(vault_path) = &obsidian.vault_path {
+                if !vault_path.trim().is_empty() {
+                    config.obsidian.vault_path = vault_path.clone();
                 }
             }
         }

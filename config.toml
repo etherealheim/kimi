@@ -12,11 +12,14 @@ api_key = ""
 [brave]
 api_key = ""
 
+[obsidian]
+vault_path = "/home/ethereal/Documents/e-vault/"
+
 [personality]
-selected = "Casca"
+selected = "sassy"
 
 [agents.chat]
-model = "venice-uncensored"
+model = "gemma3:12b"
 system_prompt = "You are a helpful assistant."
 
 [agents.translate]

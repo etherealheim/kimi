@@ -195,7 +195,7 @@ fn render_regular_message(
     let mut message_lines = Vec::new();
 
     // Message header with role indicator
-    message_lines.push(Line::from(vec![
+    let mut header_spans = vec![
         Span::styled(
             format!(" {} ", styles.role_indicator),
             Style::default().fg(Color::DarkGray),
@@ -205,7 +205,17 @@ fn render_regular_message(
             format!("  {}", message.timestamp),
             Style::default().fg(Color::DarkGray),
         ),
-    ]));
+    ];
+    if message.role == MessageRole::Assistant {
+        if let Some(usage) = &message.context_usage {
+            let usage_text = format!(
+                "  {}n | {}h | {}m",
+                usage.notes_used, usage.history_used, usage.memories_used
+            );
+            header_spans.push(Span::styled(usage_text, Style::default().fg(Color::DarkGray)));
+        }
+    }
+    message_lines.push(Line::from(header_spans));
 
     // Message content with proper indentation
     let max_empty_lines = if message.role == MessageRole::Assistant { 1 } else { 1 };

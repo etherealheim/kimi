@@ -31,6 +31,11 @@ api_key = "your_key"
 ```
 2. Keep non-secret defaults in `config.toml` (it is saved with keys redacted).
 
+## Obsidian vault
+- Configure in Connect → `Obsidian` with a local vault folder path
+- Stored in `config.toml` (or override in `config.local.toml` with `[obsidian] vault_path = "..."`)
+- Notes are read-only and used as extra context for the assistant
+
 ## Memories
 - Stored at `data/personalities/Memories.md`
 - Edit via the Personality menu → `Memories`

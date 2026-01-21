@@ -30,7 +30,7 @@ impl App {
         self.history_delete_all_active = false;
     }
 
-    fn load_history_list(&mut self) {
+    pub(crate) fn load_history_list(&mut self) {
         if let Some(storage) = &self.storage {
             self.history_conversations = if self.history_filter.is_empty() {
                 storage.load_conversations().unwrap_or_default()
@@ -42,6 +42,16 @@ impl App {
         }
         if self.history_selected_index >= self.history_conversations.len() {
             self.history_selected_index = self.history_conversations.len().saturating_sub(1);
+        }
+    }
+
+    pub fn select_history_conversation(&mut self, conversation_id: i64) {
+        if let Some(index) = self
+            .history_conversations
+            .iter()
+            .position(|conv| conv.id == conversation_id)
+        {
+            self.history_selected_index = index;
         }
     }
 
@@ -73,6 +83,7 @@ impl App {
                 content: msg.content,
                 timestamp: msg.timestamp,
                 display_name: msg.display_name,
+                context_usage: None,
             });
         }
 

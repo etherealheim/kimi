@@ -34,6 +34,7 @@ pub struct ChatMessage {
     pub content: String,
     pub timestamp: String,
     pub display_name: Option<String>,
+    pub context_usage: Option<ContextUsage>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +62,13 @@ pub enum MessageRole {
     User,
     Assistant,
     System,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContextUsage {
+    pub notes_used: usize,
+    pub history_used: usize,
+    pub memories_used: usize,
 }
 
 #[derive(Debug, Clone)]

@@ -1,11 +1,23 @@
+mod context;
+mod obsidian;
+mod search;
+mod verification;
+
+pub(crate) use self::search::should_use_brave_search;
+
 use crate::agents::ChatMessage as AgentChatMessage;
 use crate::app::types::{ChatMessage, MessageRole};
-use crate::app::{App, AppMode, TextInput};
+use crate::app::{App, AppMode, ContextUsage, TextInput};
 use crate::app::AgentEvent;
-use crate::storage::ConversationSummary;
-use chrono::{Datelike, Duration, Local};
+use crate::app::chat::agent::context::{
+    build_conversation_summary_entries,
+    count_summary_matches,
+    format_summary_entries,
+    build_memory_context,
+    tokenize_query,
+};
+use chrono::Local;
 use color_eyre::Result;
-use serde::Deserialize;
 
 impl App {
     fn model_source_for(
@@ -97,6 +109,7 @@ impl App {
                 content: format!("⚠️  {} agent not ready: {}", agent_name, error),
                 timestamp: Local::now().format("%H:%M:%S").to_string(),
                 display_name: None,
+                context_usage: None,
             });
         }
         Ok(())
@@ -130,7 +143,8 @@ impl App {
     }
 
     /// Converts chat history to agent messages format
-    pub(crate) fn build_agent_messages(&mut self, system_prompt: &str) -> Vec<AgentChatMessage> {
+    pub(crate) fn build_agent_messages(&mut self, system_prompt: &str) -> ChatBuildResult {
+        self.pending_context_usage = None;
         if self.personality_enabled && self.personality_text.is_none() {
             let selected_name = self
                 .personality_name
@@ -151,6 +165,7 @@ impl App {
             now.format("%Y-%m-%d %H:%M:%S")
         ));
         prompt_lines.push("Respond in plain text. Do not use Markdown formatting.".to_string());
+        prompt_lines.push("Respond in English unless the user asks otherwise.".to_string());
         if let Ok(profile_text) = crate::services::personality::read_my_personality() {
             let blocks = parse_user_context_blocks(&profile_text);
             let query = self
@@ -180,13 +195,22 @@ impl App {
                 }
             }
         }
+        let mut context_usage = ContextUsage {
+            notes_used: 0,
+            history_used: 0,
+            memories_used: 0,
+        };
+        let mut query_tokens: Vec<String> = Vec::new();
         if let Some(query) = self.last_user_message_content() {
-            if let Ok(Some(summary_context)) =
-                build_conversation_summary_context(self.storage.as_ref(), &query)
+            query_tokens = tokenize_query(&query);
+            if let Ok(summary_entries) =
+                build_conversation_summary_entries(self.storage.as_ref(), &query)
             {
-                if !summary_context.is_empty() {
+                if !summary_entries.is_empty() {
+                    context_usage.history_used =
+                        count_summary_matches(&summary_entries, &query_tokens);
                     prompt_lines.push("--- Conversation summaries ---".to_string());
-                    prompt_lines.push(summary_context);
+                    prompt_lines.push(format_summary_entries(&summary_entries));
                     prompt_lines.push(
                         "Use the summaries above to answer recap questions. If they are insufficient, ask a clarifying question."
                             .to_string(),
@@ -197,17 +221,50 @@ impl App {
         if let Ok(memories) = crate::services::memories::read_memories() {
             let trimmed = memories.trim();
             if !trimmed.is_empty() {
-                prompt_lines.push("--- Memories ---".to_string());
-                prompt_lines.push(trimmed.to_string());
-                prompt_lines.push(
-                    "Use the memories above as persistent user facts. Prefer matching context tags and ignore low-confidence items unless confirmed."
-                        .to_string(),
-                );
+                let blocks = crate::services::memories::parse_memory_blocks(trimmed);
+                if let Some(query) = self.last_user_message_content() {
+                    if let Some(memory_context) = build_memory_context(&blocks, &query) {
+                        context_usage.memories_used = memory_context.count;
+                        prompt_lines.push("--- Memories ---".to_string());
+                        prompt_lines.push(memory_context.content);
+                        prompt_lines.push(
+                            "Use the memories above as persistent user facts. Prefer matching context tags and ignore low-confidence items unless confirmed."
+                                .to_string(),
+                        );
+                    }
+                }
             }
         }
         if let Some(query) = self.last_user_message_content() {
-            self.enrich_prompt_with_search(&mut prompt_lines, &query);
+            if let Ok(Some(obsidian_context)) = obsidian::build_obsidian_context(
+                &self.connect_obsidian_vault,
+                &query,
+                &query_tokens,
+            ) {
+                context_usage.notes_used = obsidian_context.count;
+                prompt_lines.push(
+                    "Use the Obsidian notes below to answer questions about the user's notes."
+                        .to_string(),
+                );
+                prompt_lines.push(
+                    "Do not add or infer information that is not explicitly present in the notes."
+                        .to_string(),
+                );
+                prompt_lines.push(obsidian_context.content);
+            }
         }
+        let has_context_usage = context_usage.notes_used > 0
+            || context_usage.history_used > 0
+            || context_usage.memories_used > 0;
+        if has_context_usage {
+            self.pending_context_usage = Some(context_usage);
+        }
+        if let Some(query) = self.last_user_message_content() {
+            search::enrich_prompt_with_search(self, &mut prompt_lines, &query);
+        }
+        let has_search_context = prompt_lines
+            .iter()
+            .any(|line| line.starts_with("Brave search results for"));
         if self.personality_enabled {
             if let Some(text) = &self.personality_text {
                 if !text.trim().is_empty() {
@@ -216,7 +273,7 @@ impl App {
             }
         }
         let merged_prompt = prompt_lines.join("\n\n");
-
+        let system_context = merged_prompt.clone();
         let mut messages = vec![AgentChatMessage::system(merged_prompt)];
         for chat_message in &self.chat_history {
             if chat_message.role == MessageRole::User {
@@ -225,7 +282,11 @@ impl App {
                 messages.push(AgentChatMessage::assistant(&chat_message.content));
             }
         }
-        messages
+        ChatBuildResult {
+            messages,
+            system_context,
+            should_verify: has_context_usage || has_search_context,
+        }
     }
 
     /// Spawns a background thread to process the agent chat request
@@ -233,13 +294,29 @@ impl App {
         agent: crate::agents::Agent,
         manager: crate::agents::AgentManager,
         messages: Vec<AgentChatMessage>,
+        system_context: String,
+        should_verify: bool,
         agent_tx: std::sync::mpsc::Sender<AgentEvent>,
     ) {
         std::thread::spawn(move || {
-            let _ = match manager.chat(&agent, &messages) {
-                Ok(response) => agent_tx.send(AgentEvent::Response(response)),
+            match manager.chat(&agent, &messages) {
+                Ok(response) => {
+                    if should_verify
+                        && !response.trim().is_empty()
+                        && verification::should_verify_response(&system_context)
+                    {
+                        let verify_messages =
+                            verification::build_verification_messages(&system_context, &response);
+                        if let Ok(verified) = manager.chat(&agent, &verify_messages) {
+                            if !verified.trim().is_empty() {
+                                return agent_tx.send(AgentEvent::Response(verified));
+                            }
+                        }
+                    }
+                    agent_tx.send(AgentEvent::Response(response))
+                }
                 Err(error) => agent_tx.send(AgentEvent::Error(error.to_string())),
-            };
+            }
         });
     }
 
@@ -251,363 +328,19 @@ impl App {
             .map(|message| message.content.clone())
     }
 
-    fn enrich_prompt_with_search(&mut self, prompt_lines: &mut Vec<String>, query: &str) {
-        let decision = self.decide_search_decision(query);
-        let action = decision.as_ref().map(|value| value.action);
-        if action == Some(SearchDecisionAction::Clarify) {
-            prompt_lines.push("Ask a brief clarifying question before answering.".to_string());
-            return;
-        }
-        let should_search = match action {
-            Some(SearchDecisionAction::Search) => true,
-            Some(SearchDecisionAction::Direct) | Some(SearchDecisionAction::Clarify) => false,
-            None => should_use_brave_search(query),
-        };
-        if !should_search {
-            return;
-        }
-        let search_query = select_search_query(decision.as_ref(), query);
-        self.append_brave_search_results(prompt_lines, &search_query);
-    }
-
-    fn decide_search_decision(&self, query: &str) -> Option<SearchDecision> {
-        let agent = self.current_agent.as_ref()?;
-        let manager = self.agent_manager.as_ref()?;
-        let messages = build_search_decision_messages(query);
-        let response = manager.chat(agent, &messages).ok()?;
-        parse_search_decision(&response)
-    }
-
-    fn append_brave_search_results(&mut self, prompt_lines: &mut Vec<String>, query: &str) {
-        if self.connect_brave_key.trim().is_empty() {
-            self.pending_search_notice = Some(
-                "Live search is not configured. Add a Brave API key in config.local.toml."
-                    .to_string(),
-            );
-            return;
-        }
-        match crate::services::brave::search(&self.connect_brave_key, query) {
-            Ok(results) => {
-                if results.is_empty() {
-                    self.pending_search_notice =
-                        Some("I couldn't find any live search results for that.".to_string());
-                    return;
-                }
-                prompt_lines.push(
-                    "All temperatures must be in Celsius (metric units). Do not use Fahrenheit."
-                        .to_string(),
-                );
-                prompt_lines.push(
-                    "Use only the search results below to answer. If they are missing or unclear, say you cannot find the up-to-date information."
-                        .to_string(),
-                );
-                prompt_lines.push(
-                    "Use the Brave search results below to answer the user's request."
-                        .to_string(),
-                );
-                prompt_lines.push(format!(
-                    "Brave search results for \"{}\":\n{}",
-                    query, results
-                ));
-            }
-            Err(error) => {
-                self.pending_search_notice = Some(format!("Live search failed: {}", error));
-            }
-        }
-    }
 }
 
-const SEARCH_DECISION_SYSTEM_PROMPT: &str = r#"You are a search routing assistant.
-Decide whether a user's request needs live web search or can be answered directly.
-
-Return ONLY valid JSON in this exact schema:
-{"action":"search|direct|clarify","query":"<search query if action=search>"}
-
-Rules:
-- Use "search" for proper nouns, company names, products, recent info, or if uncertain.
-- Use "clarify" if the request is ambiguous and needs a question first.
-- Use "direct" if it is general knowledge and timeless.
-- When action is "search", craft a concise query (2-6 words).
-"#;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum SearchDecisionAction {
-    Search,
-    Direct,
-    Clarify,
+pub(crate) struct ChatBuildResult {
+    pub messages: Vec<AgentChatMessage>,
+    pub system_context: String,
+    pub should_verify: bool,
 }
 
-#[derive(Debug, Clone)]
-struct SearchDecision {
-    action: SearchDecisionAction,
-    query: Option<String>,
-}
 
-#[derive(Debug, Deserialize)]
-struct SearchDecisionPayload {
-    action: String,
-    query: Option<String>,
-}
 
-fn build_search_decision_messages(query: &str) -> Vec<AgentChatMessage> {
-    vec![
-        AgentChatMessage::system(SEARCH_DECISION_SYSTEM_PROMPT),
-        AgentChatMessage::user(query),
-    ]
-}
 
-fn parse_search_decision(response: &str) -> Option<SearchDecision> {
-    let json = extract_json_object(response)?;
-    let payload: SearchDecisionPayload = serde_json::from_str(&json).ok()?;
-    let action = parse_search_decision_action(payload.action.trim())?;
-    let query = payload.query.map(|value| value.trim().to_string());
-    Some(SearchDecision { action, query })
-}
 
-fn parse_search_decision_action(value: &str) -> Option<SearchDecisionAction> {
-    match value {
-        "search" => Some(SearchDecisionAction::Search),
-        "direct" => Some(SearchDecisionAction::Direct),
-        "clarify" => Some(SearchDecisionAction::Clarify),
-        _ => None,
-    }
-}
 
-fn extract_json_object(value: &str) -> Option<String> {
-    let start = value.find('{')?;
-    let end = value.rfind('}')?;
-    if end <= start {
-        return None;
-    }
-    Some(value[start..=end].to_string())
-}
-
-fn select_search_query(decision: Option<&SearchDecision>, fallback: &str) -> String {
-    decision
-        .and_then(|value| value.query.as_ref())
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| fallback.to_string())
-}
-
-pub(crate) fn should_use_brave_search(query: &str) -> bool {
-    let trimmed = query.trim();
-    let lowered = trimmed.to_lowercase();
-    if lowered.is_empty() {
-        return false;
-    }
-    if looks_like_weather_question(&lowered) {
-        return false;
-    }
-    if looks_like_entity_query(trimmed) {
-        return true;
-    }
-    let search_terms = [
-        "search",
-        "look up",
-        "lookup",
-        "find",
-        "latest",
-        "current",
-        "today",
-        "now",
-        "news",
-        "update",
-        "release date",
-        "price",
-        "event",
-        "happening",
-        "what is going on",
-        "schedule",
-        "score",
-        "stock",
-        "crypto",
-    ];
-    if search_terms.iter().any(|term| lowered.contains(term)) {
-        return true;
-    }
-
-    let has_time_cue = ["2024", "2025", "this week", "this month"]
-        .iter()
-        .any(|term| lowered.contains(term));
-    if has_time_cue {
-        return true;
-    }
-
-    let looks_like_question = lowered.contains('?') || lowered.starts_with("what ");
-    let has_location = ["in ", "near ", "at "].iter().any(|token| lowered.contains(token));
-    looks_like_question && has_location
-}
-
-fn looks_like_entity_query(query: &str) -> bool {
-    let trimmed = query.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    let word_count = trimmed.split_whitespace().count();
-    if word_count > 4 {
-        return false;
-    }
-    let has_separator =
-        trimmed.contains('-') || trimmed.contains('.') || trimmed.contains('/') || trimmed.contains(':');
-    let has_digit = trimmed.chars().any(|character| character.is_ascii_digit());
-    let has_uppercase = trimmed.chars().any(|character| character.is_ascii_uppercase());
-    has_separator || has_digit || (has_uppercase && word_count <= 3)
-}
-
-fn looks_like_weather_question(lowered: &str) -> bool {
-    let weather_terms = [
-        "weather",
-        "forecast",
-        "temperature",
-        "temp",
-        "rain",
-        "snow",
-        "wind",
-        "humidity",
-    ];
-    weather_terms.iter().any(|term| lowered.contains(term))
-}
-
-fn build_conversation_summary_context(
-    storage: Option<&crate::storage::StorageManager>,
-    query: &str,
-) -> Result<Option<String>> {
-    let Some(storage) = storage else {
-        return Ok(None);
-    };
-    let Some(range) = summary_time_range(query) else {
-        return Ok(None);
-    };
-    let conversations = storage.load_conversations()?;
-    let summaries = filter_summaries_by_range(&conversations, range);
-    if summaries.is_empty() {
-        return Ok(None);
-    }
-    let mut lines = Vec::new();
-    for entry in summaries {
-        lines.push(format!("- {}: {}", entry.date, entry.summary));
-    }
-    Ok(Some(lines.join("\n")))
-}
-
-#[derive(Debug, Clone)]
-struct SummaryEntry {
-    date: String,
-    summary: String,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum SummaryRange {
-    Today,
-    Yesterday,
-    ThisWeek,
-    LastWeek,
-    LastDays(u32),
-}
-
-fn summary_time_range(query: &str) -> Option<SummaryRange> {
-    let lowered = query.to_lowercase();
-    if !has_summary_intent(&lowered) {
-        return None;
-    }
-    if lowered.contains("yesterday") {
-        return Some(SummaryRange::Yesterday);
-    }
-    if lowered.contains("today") {
-        return Some(SummaryRange::Today);
-    }
-    if lowered.contains("last week") {
-        return Some(SummaryRange::LastWeek);
-    }
-    if lowered.contains("this week") {
-        return Some(SummaryRange::ThisWeek);
-    }
-    if let Some(days) = parse_last_days(&lowered) {
-        return Some(SummaryRange::LastDays(days));
-    }
-    None
-}
-
-fn has_summary_intent(lowered: &str) -> bool {
-    let triggers = [
-        "remember",
-        "recap",
-        "summary",
-        "what happened",
-        "what did we",
-        "what have we",
-        "catch me up",
-        "what were we",
-        "what we talked",
-    ];
-    triggers.iter().any(|term| lowered.contains(term))
-}
-
-fn parse_last_days(lowered: &str) -> Option<u32> {
-    let tokens: Vec<&str> = lowered.split_whitespace().collect();
-    for window in tokens.windows(3) {
-        if let [number, "days", "ago"] = window {
-            if let Ok(value) = number.parse::<u32>() {
-                return Some(value);
-            }
-        }
-    }
-    for window in tokens.windows(3) {
-        if let [number, "days", "back"] = window {
-            if let Ok(value) = number.parse::<u32>() {
-                return Some(value);
-            }
-        }
-    }
-    None
-}
-
-fn filter_summaries_by_range(
-    conversations: &[ConversationSummary],
-    range: SummaryRange,
-) -> Vec<SummaryEntry> {
-    let today = Local::now().date_naive();
-    let (start, end) = match range {
-        SummaryRange::Today => (today, today),
-        SummaryRange::Yesterday => (today - Duration::days(1), today - Duration::days(1)),
-        SummaryRange::ThisWeek => {
-            let days_from_monday = today.weekday().num_days_from_monday() as i64;
-            (today - Duration::days(days_from_monday), today)
-        }
-        SummaryRange::LastWeek => (today - Duration::days(7), today - Duration::days(1)),
-        SummaryRange::LastDays(days) => {
-            let span = i64::from(days.max(1));
-            (today - Duration::days(span), today)
-        }
-    };
-    let mut entries = Vec::new();
-    for convo in conversations {
-        let Some(date) = parse_conversation_date(&convo.created_at) else {
-            continue;
-        };
-        if date < start || date > end {
-            continue;
-        }
-        let summary = convo
-            .summary
-            .clone()
-            .or_else(|| convo.detailed_summary.clone())
-            .unwrap_or_else(|| "Conversation".to_string());
-        entries.push(SummaryEntry {
-            date: date.format("%Y-%m-%d").to_string(),
-            summary,
-        });
-    }
-    entries
-}
-
-fn parse_conversation_date(created_at: &str) -> Option<chrono::NaiveDate> {
-    chrono::DateTime::parse_from_rfc3339(created_at)
-        .ok()
-        .map(|value| value.date_naive())
-}
 
 #[derive(Debug, Clone)]
 enum UserContextKind {

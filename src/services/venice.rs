@@ -103,14 +103,18 @@ pub fn chat(api_key: &str, model: &str, messages: &[crate::agents::ChatMessage])
                 }
 
                 if status.as_u16() == 429 || status.as_u16() >= 500 {
+                    let details = response.text().unwrap_or_default();
                     last_error = Some(color_eyre::eyre::eyre!(
-                        "Venice API error ({}), retrying...",
-                        status
+                        "Venice API error ({}), retrying... {}",
+                        status,
+                        details
                     ));
                 } else {
+                    let details = response.text().unwrap_or_default();
                     return Err(color_eyre::eyre::eyre!(
-                        "Venice API error: {}",
-                        status
+                        "Venice API error: {} {}",
+                        status,
+                        details
                     ));
                 }
             }

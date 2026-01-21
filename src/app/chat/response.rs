@@ -20,11 +20,13 @@ impl App {
                     } else {
                         None
                     };
+                    let context_usage = self.pending_context_usage.take();
                     self.chat_history.push(ChatMessage {
                         role: MessageRole::Assistant,
                         content: response.clone(),
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         display_name,
+                        context_usage,
                     });
 
                     // Auto-scroll to bottom if enabled
@@ -50,6 +52,7 @@ impl App {
                         content: format!("Error: {}", error),
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         display_name: None,
+                        context_usage: None,
                     });
 
                     // Auto-scroll to bottom if enabled
@@ -69,23 +72,7 @@ impl App {
                             .as_ref()
                             .map_or("unknown", |agent| agent.name.as_str());
 
-                        let messages: Vec<crate::storage::ConversationMessage> = self
-                            .chat_history
-                            .iter()
-                            .map(|message| {
-                                let role = match message.role {
-                                    MessageRole::User => "User",
-                                    MessageRole::Assistant => "Assistant",
-                                    MessageRole::System => "System",
-                                };
-                                crate::storage::ConversationMessage {
-                                    role: role.to_string(),
-                                    content: message.content.clone(),
-                                    timestamp: message.timestamp.clone(),
-                                    display_name: message.display_name.clone(),
-                                }
-                            })
-                            .collect();
+                        let messages = self.build_conversation_messages();
 
                         let (short_summary, detailed_summary) =
                             Self::parse_summary_pair(&summary);
@@ -101,12 +88,18 @@ impl App {
                                 .with_summary(&short_summary)
                                 .with_detailed_summary(&detailed_summary);
 
-                            if let Ok(conversation_id) = storage.save_conversation(conversation_data) {
+                            if let Ok(conversation_id) = storage.save_conversation(conversation_data)
+                            {
                                 self.current_conversation_id = Some(conversation_id);
                             }
                         }
                     }
-                    self.open_history();
+                    if self.mode != crate::app::AppMode::History {
+                        self.open_history();
+                    } else if let Some(conversation_id) = self.current_conversation_id {
+                        self.load_history_list();
+                        self.select_history_conversation(conversation_id);
+                    }
                 }
                 AgentEvent::MemoryExtracted(payload) => {
                     let trimmed = payload.trim();
@@ -154,6 +147,7 @@ impl App {
                         content: message,
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         display_name: None,
+                        context_usage: None,
                     });
                 }
                 AgentEvent::DownloadFinished => {

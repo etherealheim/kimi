@@ -1,4 +1,5 @@
 mod chat;
+pub(crate) use chat::PENDING_SUMMARY_LABEL;
 mod commands;
 mod connect;
 mod help;
@@ -74,6 +75,7 @@ pub struct App {
     pub is_searching: bool,
     pub is_analyzing: bool,
     pub pending_search_notice: Option<String>,
+    pub pending_context_usage: Option<ContextUsage>,
     pub last_response: Option<String>,
     pub agent_manager: Option<AgentManager>,
     pub tts_service: Option<TTSService>,
@@ -93,6 +95,7 @@ pub struct App {
     pub connect_elevenlabs_key: String,
     pub connect_venice_key: String,
     pub connect_brave_key: String,
+    pub connect_obsidian_vault: String,
     pub connect_providers: Vec<String>,
     pub connect_selected_provider: usize,
     pub connect_api_key_input: TextInput,
@@ -203,6 +206,7 @@ impl App {
             is_searching: false,
             is_analyzing: false,
             pending_search_notice: None,
+            pending_context_usage: None,
             last_response: None,
             agent_manager: None,
             tts_service: None,
@@ -218,10 +222,12 @@ impl App {
             connect_elevenlabs_key: String::new(),
             connect_venice_key: String::new(),
             connect_brave_key: String::new(),
+            connect_obsidian_vault: String::new(),
             connect_providers: vec![
                 "ElevenLabs".to_string(),
                 "Venice AI".to_string(),
                 "Brave Search".to_string(),
+                "Obsidian".to_string(),
             ],
             connect_selected_provider: 0,
             connect_api_key_input: TextInput::new(),
@@ -264,6 +270,7 @@ impl App {
         self.agent_manager = Some(AgentManager::new(config));
         self.connect_venice_key = config.venice.api_key.clone();
         self.connect_brave_key = config.brave.api_key.clone();
+        self.connect_obsidian_vault = config.obsidian.vault_path.clone();
         if let Some(manager) = &mut self.agent_manager {
             if !self.connect_venice_key.is_empty() {
                 manager.set_venice_api_key(self.connect_venice_key.clone());

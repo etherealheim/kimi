@@ -4,6 +4,7 @@ use crate::config::Config;
 use crate::services::TTSService;
 use chrono::Local;
 use color_eyre::Result;
+use std::path::Path;
 
 impl App {
     pub fn open_connect(&mut self) {
@@ -18,6 +19,7 @@ impl App {
             self.connect_elevenlabs_key = config.elevenlabs.api_key.clone();
             self.connect_venice_key = config.venice.api_key.clone();
             self.connect_brave_key = config.brave.api_key.clone();
+            self.connect_obsidian_vault = config.obsidian.vault_path.clone();
         }
     }
 
@@ -38,6 +40,10 @@ impl App {
                 "Brave Search" => {
                     self.connect_api_key_input
                         .set_content(self.connect_brave_key.clone());
+                }
+                "Obsidian" => {
+                    self.connect_api_key_input
+                        .set_content(self.connect_obsidian_vault.clone());
                 }
                 _ => {}
             }
@@ -95,6 +101,7 @@ impl App {
                             content: "Venice API key invalid or models unavailable".to_string(),
                             timestamp: Local::now().format("%H:%M:%S").to_string(),
                             display_name: None,
+                            context_usage: None,
                         });
                     }
                 }
@@ -105,6 +112,33 @@ impl App {
                         let _ = config.save();
                     }
                     did_save = true;
+                }
+                "Obsidian" => {
+                    let candidate_path = self.connect_api_key_input.content().to_string();
+                    if candidate_path.trim().is_empty() {
+                        self.chat_history.push(ChatMessage {
+                            role: MessageRole::System,
+                            content: "Obsidian vault path cannot be empty".to_string(),
+                            timestamp: Local::now().format("%H:%M:%S").to_string(),
+                            display_name: None,
+                            context_usage: None,
+                        });
+                    } else if !Path::new(&candidate_path).is_dir() {
+                        self.chat_history.push(ChatMessage {
+                            role: MessageRole::System,
+                            content: "Obsidian vault path is not a directory".to_string(),
+                            timestamp: Local::now().format("%H:%M:%S").to_string(),
+                            display_name: None,
+                            context_usage: None,
+                        });
+                    } else {
+                        self.connect_obsidian_vault = candidate_path;
+                        if let Ok(mut config) = Config::load() {
+                            config.obsidian.vault_path = self.connect_obsidian_vault.clone();
+                            let _ = config.save();
+                        }
+                        did_save = true;
+                    }
                 }
                 _ => {}
             }

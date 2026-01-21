@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::app::PENDING_SUMMARY_LABEL;
 use crate::ui::components;
 use crate::ui::utils::centered_rect;
 
@@ -120,10 +121,14 @@ fn render_history_list(f: &mut Frame, app: &App, area: Rect) {
                     conv.created_at.clone()
                 };
 
-            let summary_text = conv
-                .summary
-                .clone()
-                .unwrap_or_else(|| "Untitled conversation".to_string());
+            let is_generating = conv.summary.as_deref() == Some(PENDING_SUMMARY_LABEL);
+            let summary_text = if is_generating {
+                "Generating summary...".to_string()
+            } else {
+                conv.summary
+                    .clone()
+                    .unwrap_or_else(|| "Untitled conversation".to_string())
+            };
 
             // Selection styles
             let (prefix, prefix_style) = if is_selected {
@@ -161,7 +166,7 @@ fn render_history_list(f: &mut Frame, app: &App, area: Rect) {
             ]);
 
             // Second line: metadata (date, agent, message count)
-            let meta_line = Line::from(vec![
+            let mut meta_spans = vec![
                 Span::styled("   ", meta_style),
                 Span::styled(date_display, meta_style),
                 Span::styled(" · ", meta_style),
@@ -174,7 +179,19 @@ fn render_history_list(f: &mut Frame, app: &App, area: Rect) {
                     },
                 ),
                 Span::styled(format!(" · {} messages", conv.message_count), meta_style),
-            ]);
+            ];
+            if is_generating {
+                meta_spans.push(Span::styled(" · ", meta_style));
+                meta_spans.push(Span::styled(
+                    PENDING_SUMMARY_LABEL,
+                    if is_selected {
+                        Style::default().fg(Color::Black).bg(Color::Cyan)
+                    } else {
+                        Style::default().fg(Color::Yellow)
+                    },
+                ));
+            }
+            let meta_line = Line::from(meta_spans);
 
             let mut item_lines = vec![summary_line];
             for line in summary_lines.iter().skip(1) {

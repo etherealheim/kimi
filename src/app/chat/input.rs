@@ -15,6 +15,7 @@ impl App {
             content: message_content.to_string(),
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             display_name: None,
+            context_usage: None,
         });
     }
 
@@ -23,17 +24,25 @@ impl App {
             return Ok(());
         }
 
+        let command_content = self.chat_input.content().trim().to_string();
         if self.handle_convert_command()? {
+            if !command_content.is_empty() {
+                self.add_user_message_to_history(&command_content);
+            }
             return Ok(());
         }
 
         if self.handle_download_command()? {
+            if !command_content.is_empty() {
+                self.add_user_message_to_history(&command_content);
+            }
             return Ok(());
         }
 
         let user_message = self.cleaned_chat_input_with_attachments();
         self.chat_input.clear();
         self.reset_chat_scroll();
+        self.add_user_message_to_history(&user_message);
 
         if let Some(reply) = try_handle_weather_question(&user_message)? {
             self.add_assistant_message(&reply);
@@ -50,14 +59,14 @@ impl App {
             return Ok(());
         }
 
-        self.add_user_message_to_history(&user_message);
         self.pending_search_notice = None;
         self.is_loading = true;
         self.is_searching = self.should_mark_searching(&user_message);
         self.is_analyzing = !self.chat_attachments.is_empty();
 
         let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
-        let mut messages = self.build_agent_messages(&agent.system_prompt);
+        let build_result = self.build_agent_messages(&agent.system_prompt);
+        let mut messages = build_result.messages;
         if let Some(notice) = self.pending_search_notice.take() {
             self.is_loading = false;
             self.is_searching = false;
@@ -71,7 +80,14 @@ impl App {
             self.chat_attachments.clear();
         }
 
-        Self::spawn_agent_chat_thread(agent, manager, messages, agent_tx);
+        Self::spawn_agent_chat_thread(
+            agent,
+            manager,
+            messages,
+            build_result.system_context,
+            build_result.should_verify,
+            agent_tx,
+        );
 
         Ok(())
     }
@@ -113,6 +129,7 @@ impl App {
             content: content.to_string(),
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             display_name: None,
+            context_usage: None,
         });
     }
 
@@ -127,6 +144,7 @@ impl App {
             content: content.to_string(),
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             display_name,
+            context_usage: None,
         });
     }
 
