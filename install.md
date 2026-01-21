@@ -3,6 +3,7 @@
 ## Prerequisites
 - Rust toolchain (stable). Install via `rustup`: https://rustup.rs
 - Ollama installed and running: https://ollama.com
+- micro text editor. Install via `brew install micro` (macOS) or download from https://micro-editor.github.io
 
 ## Build and run
 - `cargo build`
@@ -46,11 +47,16 @@ api_key = "your_key"
 - `Ctrl+R` speak last response
 - `Ctrl+T` toggle auto-TTS
 - `Ctrl+P` toggle personality
+- `Ctrl+V` paste clipboard image
 - `Esc` back/close
 
 ## Commands
-convert [type] path-to-file
-download [link-to-instagram-facebook-twitter-youtube]
-today returns todays date
-weather returns weather
-time returns time
+
+### Chat Commands (type directly in chat)
+- `convert <format> <path>` - Convert a file to the specified format
+- `download <url>` - Download video from Instagram, Facebook, Twitter, or YouTube
+
+### Natural Language Queries (ask in chat)
+- Ask "what's the weather?" or "weather" - Returns current weather for Prague
+- Ask "what time is it?" or "time" - Returns current time
+- Ask "what's today's date?" or "today" - Returns today's date

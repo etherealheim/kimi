@@ -13,12 +13,12 @@ api_key = ""
 api_key = ""
 
 [personality]
-selected = "sassy"
+selected = "Casca"
+
+[agents.chat]
+model = "venice-uncensored"
+system_prompt = "You are a helpful assistant."
 
 [agents.translate]
 model = "translategemma:latest"
 system_prompt = "You are a translation assistant. Translate text between languages clearly and accurately."
-
-[agents.chat]
-model = "gemma3:12b"
-system_prompt = "You are a helpful assistant."

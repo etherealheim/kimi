@@ -38,6 +38,8 @@ impl App {
                     {
                         let _ = tts.speak_text(&response);
                     }
+
+                    let _ = self.queue_realtime_memory_extraction(&response);
                 }
                 AgentEvent::Error(error) => {
                     self.is_loading = false;
@@ -116,10 +118,15 @@ impl App {
                                 Ok(existing) => {
                                     let current =
                                         crate::services::memories::parse_memory_blocks(&existing);
+                                    let current_snapshot = current.to_string();
                                     let merged = crate::services::memories::merge_memory_blocks(
                                         current,
                                         extracted,
                                     );
+                                    let merged_snapshot = merged.to_string();
+                                    if merged_snapshot == current_snapshot {
+                                        return;
+                                    }
                                     if let Err(error) =
                                         crate::services::memories::write_memories(&merged)
                                     {
@@ -127,6 +134,8 @@ impl App {
                                             "Memories update error: {}",
                                             error
                                         ));
+                                    } else {
+                                        self.show_status_toast("MEMORY SAVED");
                                     }
                                 }
                                 Err(error) => {

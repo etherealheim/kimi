@@ -107,6 +107,8 @@ Conversation: {}",
     ) {
         let extraction_prompt = format!(
             "Extract persistent user memories from this conversation.\n\
+Prefer specific entities over generic categories. If a title or proper noun is mentioned, include it.\n\
+Examples: use \"finished Elden Ring\" instead of \"finishing games\".\n\
 Return only blocks in the exact format below and nothing else.\n\
 Use empty output if nothing is relevant.\n\
 [context:likes]\n\
@@ -139,6 +141,79 @@ Conversation: {}",
         });
     }
 
+    pub(crate) fn queue_realtime_memory_extraction(
+        &self,
+        assistant_response: &str,
+    ) -> Result<()> {
+        let Some(context) = self.build_realtime_memory_context(assistant_response) else {
+            return Ok(());
+        };
+        let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
+        let job = MemoryExtractionJob {
+            agent,
+            manager,
+            context,
+            agent_tx,
+        };
+        Self::spawn_realtime_memory_extraction_thread(job);
+        Ok(())
+    }
+
+    fn build_realtime_memory_context(&self, assistant_response: &str) -> Option<String> {
+        let user_message = self.last_user_message_content()?;
+        let trimmed_user = user_message.trim();
+        if trimmed_user.is_empty() {
+            return None;
+        }
+        let trimmed_assistant = assistant_response.trim();
+        let context = format!(
+            "User: {}\nAssistant: {}",
+            trimmed_user,
+            trimmed_assistant
+        );
+        Some(context)
+    }
+
+    fn spawn_realtime_memory_extraction_thread(job: MemoryExtractionJob) {
+        let extraction_prompt = format!(
+            "Decide if the user's latest message contains durable personal facts worth saving.\n\
+Only capture stable, user-specific details (preferences, tools, projects, topics, location, timezone).\n\
+Prefer specific entities over generic categories. If a title or proper noun is mentioned, include it.\n\
+Examples: use \"finished Elden Ring\" instead of \"finishing games\".\n\
+If nothing is worth saving, return empty output.\n\
+Return only blocks in the exact format below and nothing else.\n\
+[context:likes]\n\
+<value | context=general | source=explicit | confidence=high>\n\
+[context:dislikes]\n\
+<value | context=general | source=explicit | confidence=high>\n\
+[context:location]\n\
+<value | context=general | source=explicit | confidence=high>\n\
+[context:timezone]\n\
+<value | context=general | source=explicit | confidence=high>\n\
+[context:tools]\n\
+<value | context=general | source=explicit | confidence=high>\n\
+[context:projects]\n\
+<value | context=general | source=explicit | confidence=high>\n\
+[context:topics]\n\
+<value | context=general | source=explicit | confidence=high>\n\n\
+Conversation: {}",
+            job.context.chars().take(400).collect::<String>()
+        );
+
+        std::thread::spawn(move || {
+            let messages = vec![
+                AgentChatMessage::system(
+                    "You extract structured user memory. Follow the format exactly.",
+                ),
+                AgentChatMessage::user(&extraction_prompt),
+            ];
+            let response = job.manager.chat(&job.agent, &messages).unwrap_or_default();
+            let _ = job
+                .agent_tx
+                .send(AgentEvent::MemoryExtracted(response));
+        });
+    }
+
     pub fn exit_chat_to_history(&mut self) -> Result<()> {
         if self.chat_history.is_empty() {
             self.open_history();
@@ -161,4 +236,11 @@ Conversation: {}",
 
         Ok(())
     }
+}
+
+struct MemoryExtractionJob {
+    agent: crate::agents::Agent,
+    manager: crate::agents::AgentManager,
+    context: String,
+    agent_tx: std::sync::mpsc::Sender<AgentEvent>,
 }

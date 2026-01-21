@@ -184,6 +184,7 @@ pub fn merge_memory_blocks(existing: MemoryBlocks, incoming: MemoryBlocks) -> Me
         if !is_allowed_context_tag(&tag) {
             continue;
         }
+        remove_conflicting_entries(&mut merged, &tag, &lines);
         let current = merged.contexts.entry(tag).or_default();
         let updated = merge_lines(std::mem::take(current), lines);
         *current = updated;
@@ -264,6 +265,56 @@ fn merge_lines(existing: Vec<String>, incoming: Vec<String>) -> Vec<String> {
     result
 }
 
+fn remove_conflicting_entries(
+    blocks: &mut MemoryBlocks,
+    incoming_tag: &str,
+    incoming_lines: &[String],
+) {
+    let Some(conflicts) = conflicting_tags(incoming_tag) else {
+        return;
+    };
+    let values = collect_normalized_values(incoming_lines);
+    if values.is_empty() {
+        return;
+    }
+    for conflict_tag in conflicts {
+        if let Some(lines) = blocks.contexts.get_mut(*conflict_tag) {
+            *lines = remove_values(lines, &values);
+        }
+    }
+}
+
+fn conflicting_tags(tag: &str) -> Option<&'static [&'static str]> {
+    match tag {
+        "likes" => Some(&["dislikes"]),
+        "dislikes" => Some(&["likes"]),
+        _ => None,
+    }
+}
+
+fn collect_normalized_values(lines: &[String]) -> HashMap<String, ()> {
+    let mut values = HashMap::new();
+    for line in lines {
+        if let Some(value) = normalize_value(line) {
+            values.insert(value, ());
+        }
+    }
+    values
+}
+
+fn remove_values(lines: &[String], values: &HashMap<String, ()>) -> Vec<String> {
+    let mut filtered = Vec::new();
+    for line in lines {
+        let keep = normalize_value(line)
+            .map(|value| !values.contains_key(&value))
+            .unwrap_or(true);
+        if keep {
+            filtered.push(line.clone());
+        }
+    }
+    filtered
+}
+
 fn normalize_line(line: &str) -> String {
     let cleaned = clean_line(line);
     if cleaned.is_empty() || is_placeholder_value(&cleaned) {
@@ -271,6 +322,19 @@ fn normalize_line(line: &str) -> String {
     }
     let entry = parse_entry(&cleaned);
     format!("{}@{}", entry.value.to_lowercase(), entry.context.to_lowercase())
+}
+
+fn normalize_value(line: &str) -> Option<String> {
+    let cleaned = clean_line(line);
+    if cleaned.is_empty() || is_placeholder_value(&cleaned) {
+        return None;
+    }
+    let entry = parse_entry(&cleaned);
+    let value = entry.value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some(value.to_lowercase())
 }
 
 fn is_allowed_context_tag(tag: &str) -> bool {

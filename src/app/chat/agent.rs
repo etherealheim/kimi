@@ -5,6 +5,7 @@ use crate::app::AgentEvent;
 use crate::storage::ConversationSummary;
 use chrono::{Datelike, Duration, Local};
 use color_eyre::Result;
+use serde::Deserialize;
 
 impl App {
     fn model_source_for(
@@ -205,44 +206,7 @@ impl App {
             }
         }
         if let Some(query) = self.last_user_message_content() {
-            if should_use_brave_search(&query) {
-                if !self.connect_brave_key.trim().is_empty() {
-                    match crate::services::brave::search(&self.connect_brave_key, &query) {
-                        Ok(results) => {
-                            if !results.is_empty() {
-                                prompt_lines.push(
-                                    "All temperatures must be in Celsius (metric units). Do not use Fahrenheit."
-                                        .to_string(),
-                                );
-                                prompt_lines.push(
-                                    "Use only the search results below to answer. If they are missing or unclear, say you cannot find the up-to-date information."
-                                        .to_string(),
-                                );
-                                prompt_lines.push(
-                                    "Use the Brave search results below to answer the user's request."
-                                        .to_string(),
-                                );
-                                prompt_lines.push(format!(
-                                    "Brave search results for \"{}\":\n{}",
-                                    query, results
-                                ));
-                            } else {
-                                self.pending_search_notice =
-                                    Some("I couldn't find any live search results for that.".to_string());
-                            }
-                        }
-                        Err(error) => {
-                            self.pending_search_notice =
-                                Some(format!("Live search failed: {}", error));
-                        }
-                    }
-                } else {
-                    self.pending_search_notice = Some(
-                        "Live search is not configured. Add a Brave API key in config.local.toml."
-                            .to_string(),
-                    );
-                }
-            }
+            self.enrich_prompt_with_search(&mut prompt_lines, &query);
         }
         if self.personality_enabled {
             if let Some(text) = &self.personality_text {
@@ -279,22 +243,165 @@ impl App {
         });
     }
 
-    fn last_user_message_content(&self) -> Option<String> {
+    pub(crate) fn last_user_message_content(&self) -> Option<String> {
         self.chat_history
             .iter()
             .rev()
             .find(|message| message.role == MessageRole::User)
             .map(|message| message.content.clone())
     }
+
+    fn enrich_prompt_with_search(&mut self, prompt_lines: &mut Vec<String>, query: &str) {
+        let decision = self.decide_search_decision(query);
+        let action = decision.as_ref().map(|value| value.action);
+        if action == Some(SearchDecisionAction::Clarify) {
+            prompt_lines.push("Ask a brief clarifying question before answering.".to_string());
+            return;
+        }
+        let should_search = match action {
+            Some(SearchDecisionAction::Search) => true,
+            Some(SearchDecisionAction::Direct) | Some(SearchDecisionAction::Clarify) => false,
+            None => should_use_brave_search(query),
+        };
+        if !should_search {
+            return;
+        }
+        let search_query = select_search_query(decision.as_ref(), query);
+        self.append_brave_search_results(prompt_lines, &search_query);
+    }
+
+    fn decide_search_decision(&self, query: &str) -> Option<SearchDecision> {
+        let agent = self.current_agent.as_ref()?;
+        let manager = self.agent_manager.as_ref()?;
+        let messages = build_search_decision_messages(query);
+        let response = manager.chat(agent, &messages).ok()?;
+        parse_search_decision(&response)
+    }
+
+    fn append_brave_search_results(&mut self, prompt_lines: &mut Vec<String>, query: &str) {
+        if self.connect_brave_key.trim().is_empty() {
+            self.pending_search_notice = Some(
+                "Live search is not configured. Add a Brave API key in config.local.toml."
+                    .to_string(),
+            );
+            return;
+        }
+        match crate::services::brave::search(&self.connect_brave_key, query) {
+            Ok(results) => {
+                if results.is_empty() {
+                    self.pending_search_notice =
+                        Some("I couldn't find any live search results for that.".to_string());
+                    return;
+                }
+                prompt_lines.push(
+                    "All temperatures must be in Celsius (metric units). Do not use Fahrenheit."
+                        .to_string(),
+                );
+                prompt_lines.push(
+                    "Use only the search results below to answer. If they are missing or unclear, say you cannot find the up-to-date information."
+                        .to_string(),
+                );
+                prompt_lines.push(
+                    "Use the Brave search results below to answer the user's request."
+                        .to_string(),
+                );
+                prompt_lines.push(format!(
+                    "Brave search results for \"{}\":\n{}",
+                    query, results
+                ));
+            }
+            Err(error) => {
+                self.pending_search_notice = Some(format!("Live search failed: {}", error));
+            }
+        }
+    }
+}
+
+const SEARCH_DECISION_SYSTEM_PROMPT: &str = r#"You are a search routing assistant.
+Decide whether a user's request needs live web search or can be answered directly.
+
+Return ONLY valid JSON in this exact schema:
+{"action":"search|direct|clarify","query":"<search query if action=search>"}
+
+Rules:
+- Use "search" for proper nouns, company names, products, recent info, or if uncertain.
+- Use "clarify" if the request is ambiguous and needs a question first.
+- Use "direct" if it is general knowledge and timeless.
+- When action is "search", craft a concise query (2-6 words).
+"#;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SearchDecisionAction {
+    Search,
+    Direct,
+    Clarify,
+}
+
+#[derive(Debug, Clone)]
+struct SearchDecision {
+    action: SearchDecisionAction,
+    query: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchDecisionPayload {
+    action: String,
+    query: Option<String>,
+}
+
+fn build_search_decision_messages(query: &str) -> Vec<AgentChatMessage> {
+    vec![
+        AgentChatMessage::system(SEARCH_DECISION_SYSTEM_PROMPT),
+        AgentChatMessage::user(query),
+    ]
+}
+
+fn parse_search_decision(response: &str) -> Option<SearchDecision> {
+    let json = extract_json_object(response)?;
+    let payload: SearchDecisionPayload = serde_json::from_str(&json).ok()?;
+    let action = parse_search_decision_action(payload.action.trim())?;
+    let query = payload.query.map(|value| value.trim().to_string());
+    Some(SearchDecision { action, query })
+}
+
+fn parse_search_decision_action(value: &str) -> Option<SearchDecisionAction> {
+    match value {
+        "search" => Some(SearchDecisionAction::Search),
+        "direct" => Some(SearchDecisionAction::Direct),
+        "clarify" => Some(SearchDecisionAction::Clarify),
+        _ => None,
+    }
+}
+
+fn extract_json_object(value: &str) -> Option<String> {
+    let start = value.find('{')?;
+    let end = value.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    Some(value[start..=end].to_string())
+}
+
+fn select_search_query(decision: Option<&SearchDecision>, fallback: &str) -> String {
+    decision
+        .and_then(|value| value.query.as_ref())
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 pub(crate) fn should_use_brave_search(query: &str) -> bool {
-    let lowered = query.to_lowercase();
+    let trimmed = query.trim();
+    let lowered = trimmed.to_lowercase();
     if lowered.is_empty() {
         return false;
     }
     if looks_like_weather_question(&lowered) {
         return false;
+    }
+    if looks_like_entity_query(trimmed) {
+        return true;
     }
     let search_terms = [
         "search",
@@ -331,6 +438,22 @@ pub(crate) fn should_use_brave_search(query: &str) -> bool {
     let looks_like_question = lowered.contains('?') || lowered.starts_with("what ");
     let has_location = ["in ", "near ", "at "].iter().any(|token| lowered.contains(token));
     looks_like_question && has_location
+}
+
+fn looks_like_entity_query(query: &str) -> bool {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let word_count = trimmed.split_whitespace().count();
+    if word_count > 4 {
+        return false;
+    }
+    let has_separator =
+        trimmed.contains('-') || trimmed.contains('.') || trimmed.contains('/') || trimmed.contains(':');
+    let has_digit = trimmed.chars().any(|character| character.is_ascii_digit());
+    let has_uppercase = trimmed.chars().any(|character| character.is_ascii_uppercase());
+    has_separator || has_digit || (has_uppercase && word_count <= 3)
 }
 
 fn looks_like_weather_question(lowered: &str) -> bool {
