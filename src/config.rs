@@ -19,6 +19,23 @@ pub struct Config {
     pub agents: HashMap<String, AgentConfig>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct LocalConfig {
+    elevenlabs: Option<LocalElevenLabsConfig>,
+    venice: Option<LocalApiConfig>,
+    brave: Option<LocalApiConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalElevenLabsConfig {
+    api_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalApiConfig {
+    api_key: Option<String>,
+}
+
 /// Ollama backend configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OllamaConfig {
@@ -112,34 +129,97 @@ impl Default for Config {
 impl Config {
     /// Loads configuration from disk or creates default if not found
     pub fn load() -> Result<Self> {
-        let config_path = Self::config_path()?;
+        let project_config_path = Self::project_config_path()?;
+        let legacy_config_path = Self::legacy_config_path()?;
 
-        if !config_path.exists() {
+        let mut config = if project_config_path.exists() {
+            let contents = fs::read_to_string(&project_config_path)?;
+            toml::from_str(&contents)?
+        } else if legacy_config_path.exists() {
+            let contents = fs::read_to_string(&legacy_config_path)?;
+            let config: Config = toml::from_str(&contents)?;
+            config.save()?;
+            config
+        } else {
             // Create default config file
             let config = Config::default();
             config.save()?;
-            return Ok(config);
-        }
+            config
+        };
 
-        let contents = fs::read_to_string(&config_path)?;
-        let config: Config = toml::from_str(&contents)?;
+        if let Some(local) = Self::load_local_config()? {
+            Self::apply_local_overrides(&mut config, &local);
+        }
         Ok(config)
     }
 
     /// Saves configuration to disk
     pub fn save(&self) -> Result<()> {
-        let config_path = Self::config_path()?;
+        let config_path = Self::project_config_path()?;
         if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&config_path, toml::to_string_pretty(self)?)?;
+        let redacted = self.redacted_for_project();
+        fs::write(&config_path, toml::to_string_pretty(&redacted)?)?;
         Ok(())
     }
 
     /// Returns the path to the configuration file
-    pub fn config_path() -> Result<PathBuf> {
+    pub fn project_config_path() -> Result<PathBuf> {
+        let current_dir = std::env::current_dir()?;
+        Ok(current_dir.join("config.toml"))
+    }
+
+    fn legacy_config_path() -> Result<PathBuf> {
         let proj_dirs = ProjectDirs::from("", "", "kimi")
             .ok_or_else(|| color_eyre::eyre::eyre!("Could not determine config directory"))?;
         Ok(proj_dirs.config_dir().join("config.toml"))
+    }
+
+    fn local_config_path() -> Result<PathBuf> {
+        let current_dir = std::env::current_dir()?;
+        Ok(current_dir.join("config.local.toml"))
+    }
+
+    fn load_local_config() -> Result<Option<LocalConfig>> {
+        let path = Self::local_config_path()?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let contents = fs::read_to_string(&path)?;
+        let local = toml::from_str(&contents)?;
+        Ok(Some(local))
+    }
+
+    fn apply_local_overrides(config: &mut Self, local: &LocalConfig) {
+        if let Some(elevenlabs) = &local.elevenlabs {
+            if let Some(api_key) = &elevenlabs.api_key {
+                if !api_key.trim().is_empty() {
+                    config.elevenlabs.api_key = api_key.clone();
+                }
+            }
+        }
+        if let Some(venice) = &local.venice {
+            if let Some(api_key) = &venice.api_key {
+                if !api_key.trim().is_empty() {
+                    config.venice.api_key = api_key.clone();
+                }
+            }
+        }
+        if let Some(brave) = &local.brave {
+            if let Some(api_key) = &brave.api_key {
+                if !api_key.trim().is_empty() {
+                    config.brave.api_key = api_key.clone();
+                }
+            }
+        }
+    }
+
+    fn redacted_for_project(&self) -> Self {
+        let mut redacted = self.clone();
+        redacted.elevenlabs.api_key = String::new();
+        redacted.venice.api_key = String::new();
+        redacted.brave.api_key = String::new();
+        redacted
     }
 }

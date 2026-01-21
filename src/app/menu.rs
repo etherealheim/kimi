@@ -4,14 +4,14 @@ use crate::app::{App, AppMode, Navigable};
 impl App {
     pub fn open_command_menu(&mut self) {
         // Save the previous mode so we can return to it
+        self.previous_mode = Some(self.mode.clone());
         self.mode = AppMode::CommandMenu;
         self.input.clear();
         self.selected_index = 0;
     }
 
     pub fn close_menu(&mut self) {
-        // Return to chat mode
-        self.mode = AppMode::Chat;
+        self.mode = self.previous_mode.take().unwrap_or(AppMode::Chat);
         self.input.clear();
         self.selected_index = 0;
     }

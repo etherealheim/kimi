@@ -2,7 +2,8 @@ use crate::agents::ChatMessage as AgentChatMessage;
 use crate::app::types::{ChatMessage, MessageRole};
 use crate::app::{App, AppMode, TextInput};
 use crate::app::AgentEvent;
-use chrono::Local;
+use crate::storage::ConversationSummary;
+use chrono::{Datelike, Duration, Local};
 use color_eyre::Result;
 
 impl App {
@@ -179,6 +180,31 @@ impl App {
             }
         }
         if let Some(query) = self.last_user_message_content() {
+            if let Ok(Some(summary_context)) =
+                build_conversation_summary_context(self.storage.as_ref(), &query)
+            {
+                if !summary_context.is_empty() {
+                    prompt_lines.push("--- Conversation summaries ---".to_string());
+                    prompt_lines.push(summary_context);
+                    prompt_lines.push(
+                        "Use the summaries above to answer recap questions. If they are insufficient, ask a clarifying question."
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        if let Ok(memories) = crate::services::memories::read_memories() {
+            let trimmed = memories.trim();
+            if !trimmed.is_empty() {
+                prompt_lines.push("--- Memories ---".to_string());
+                prompt_lines.push(trimmed.to_string());
+                prompt_lines.push(
+                    "Use the memories above as persistent user facts. Prefer matching context tags and ignore low-confidence items unless confirmed."
+                        .to_string(),
+                );
+            }
+        }
+        if let Some(query) = self.last_user_message_content() {
             if should_use_brave_search(&query) {
                 if !self.connect_brave_key.trim().is_empty() {
                     match crate::services::brave::search(&self.connect_brave_key, &query) {
@@ -186,6 +212,10 @@ impl App {
                             if !results.is_empty() {
                                 prompt_lines.push(
                                     "All temperatures must be in Celsius (metric units). Do not use Fahrenheit."
+                                        .to_string(),
+                                );
+                                prompt_lines.push(
+                                    "Use only the search results below to answer. If they are missing or unclear, say you cannot find the up-to-date information."
                                         .to_string(),
                                 );
                                 prompt_lines.push(
@@ -197,15 +227,20 @@ impl App {
                                     query, results
                                 ));
                             } else {
-                                self.add_system_message("Brave search returned no results");
+                                self.pending_search_notice =
+                                    Some("I couldn't find any live search results for that.".to_string());
                             }
                         }
                         Err(error) => {
-                            self.add_system_message(&format!("Brave search error: {}", error));
+                            self.pending_search_notice =
+                                Some(format!("Live search failed: {}", error));
                         }
                     }
                 } else {
-                    self.add_system_message("Brave search is configured but API key is missing");
+                    self.pending_search_notice = Some(
+                        "Live search is not configured. Add a Brave API key in config.local.toml."
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -253,9 +288,12 @@ impl App {
     }
 }
 
-fn should_use_brave_search(query: &str) -> bool {
+pub(crate) fn should_use_brave_search(query: &str) -> bool {
     let lowered = query.to_lowercase();
     if lowered.is_empty() {
+        return false;
+    }
+    if looks_like_weather_question(&lowered) {
         return false;
     }
     let search_terms = [
@@ -271,8 +309,6 @@ fn should_use_brave_search(query: &str) -> bool {
         "update",
         "release date",
         "price",
-        "weather",
-        "forecast",
         "event",
         "happening",
         "what is going on",
@@ -295,6 +331,159 @@ fn should_use_brave_search(query: &str) -> bool {
     let looks_like_question = lowered.contains('?') || lowered.starts_with("what ");
     let has_location = ["in ", "near ", "at "].iter().any(|token| lowered.contains(token));
     looks_like_question && has_location
+}
+
+fn looks_like_weather_question(lowered: &str) -> bool {
+    let weather_terms = [
+        "weather",
+        "forecast",
+        "temperature",
+        "temp",
+        "rain",
+        "snow",
+        "wind",
+        "humidity",
+    ];
+    weather_terms.iter().any(|term| lowered.contains(term))
+}
+
+fn build_conversation_summary_context(
+    storage: Option<&crate::storage::StorageManager>,
+    query: &str,
+) -> Result<Option<String>> {
+    let Some(storage) = storage else {
+        return Ok(None);
+    };
+    let Some(range) = summary_time_range(query) else {
+        return Ok(None);
+    };
+    let conversations = storage.load_conversations()?;
+    let summaries = filter_summaries_by_range(&conversations, range);
+    if summaries.is_empty() {
+        return Ok(None);
+    }
+    let mut lines = Vec::new();
+    for entry in summaries {
+        lines.push(format!("- {}: {}", entry.date, entry.summary));
+    }
+    Ok(Some(lines.join("\n")))
+}
+
+#[derive(Debug, Clone)]
+struct SummaryEntry {
+    date: String,
+    summary: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SummaryRange {
+    Today,
+    Yesterday,
+    ThisWeek,
+    LastWeek,
+    LastDays(u32),
+}
+
+fn summary_time_range(query: &str) -> Option<SummaryRange> {
+    let lowered = query.to_lowercase();
+    if !has_summary_intent(&lowered) {
+        return None;
+    }
+    if lowered.contains("yesterday") {
+        return Some(SummaryRange::Yesterday);
+    }
+    if lowered.contains("today") {
+        return Some(SummaryRange::Today);
+    }
+    if lowered.contains("last week") {
+        return Some(SummaryRange::LastWeek);
+    }
+    if lowered.contains("this week") {
+        return Some(SummaryRange::ThisWeek);
+    }
+    if let Some(days) = parse_last_days(&lowered) {
+        return Some(SummaryRange::LastDays(days));
+    }
+    None
+}
+
+fn has_summary_intent(lowered: &str) -> bool {
+    let triggers = [
+        "remember",
+        "recap",
+        "summary",
+        "what happened",
+        "what did we",
+        "what have we",
+        "catch me up",
+        "what were we",
+        "what we talked",
+    ];
+    triggers.iter().any(|term| lowered.contains(term))
+}
+
+fn parse_last_days(lowered: &str) -> Option<u32> {
+    let tokens: Vec<&str> = lowered.split_whitespace().collect();
+    for window in tokens.windows(3) {
+        if let [number, "days", "ago"] = window {
+            if let Ok(value) = number.parse::<u32>() {
+                return Some(value);
+            }
+        }
+    }
+    for window in tokens.windows(3) {
+        if let [number, "days", "back"] = window {
+            if let Ok(value) = number.parse::<u32>() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn filter_summaries_by_range(
+    conversations: &[ConversationSummary],
+    range: SummaryRange,
+) -> Vec<SummaryEntry> {
+    let today = Local::now().date_naive();
+    let (start, end) = match range {
+        SummaryRange::Today => (today, today),
+        SummaryRange::Yesterday => (today - Duration::days(1), today - Duration::days(1)),
+        SummaryRange::ThisWeek => {
+            let days_from_monday = today.weekday().num_days_from_monday() as i64;
+            (today - Duration::days(days_from_monday), today)
+        }
+        SummaryRange::LastWeek => (today - Duration::days(7), today - Duration::days(1)),
+        SummaryRange::LastDays(days) => {
+            let span = i64::from(days.max(1));
+            (today - Duration::days(span), today)
+        }
+    };
+    let mut entries = Vec::new();
+    for convo in conversations {
+        let Some(date) = parse_conversation_date(&convo.created_at) else {
+            continue;
+        };
+        if date < start || date > end {
+            continue;
+        }
+        let summary = convo
+            .summary
+            .clone()
+            .or_else(|| convo.detailed_summary.clone())
+            .unwrap_or_else(|| "Conversation".to_string());
+        entries.push(SummaryEntry {
+            date: date.format("%Y-%m-%d").to_string(),
+            summary,
+        });
+    }
+    entries
+}
+
+fn parse_conversation_date(created_at: &str) -> Option<chrono::NaiveDate> {
+    chrono::DateTime::parse_from_rfc3339(created_at)
+        .ok()
+        .map(|value| value.date_naive())
 }
 
 #[derive(Debug, Clone)]

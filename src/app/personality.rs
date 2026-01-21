@@ -44,11 +44,18 @@ impl App {
     }
 
     pub fn edit_selected_personality(&mut self) -> Result<()> {
+        if self.personality_selected_index == 1 {
+            if let Err(error) = crate::services::memories::open_memories_in_new_terminal() {
+                crate::services::memories::open_memories_in_place()?;
+                self.add_system_message(&format!("Memories editor error: {}", error));
+            }
+            return Ok(());
+        }
         let name = if self.personality_selected_index == 0 {
             crate::services::personality::my_personality_name()
         } else {
             self.personality_items
-                .get(self.personality_selected_index.saturating_sub(1))
+                .get(self.personality_selected_index.saturating_sub(2))
                 .cloned()
                 .unwrap_or_else(crate::services::personality::default_personality_name)
         };
@@ -60,8 +67,8 @@ impl App {
     }
 
     pub fn delete_selected_personality(&mut self) -> Result<()> {
-        if self.personality_selected_index == 0 {
-            self.add_system_message("My personality cannot be deleted");
+        if self.personality_selected_index <= 1 {
+            self.add_system_message("This entry cannot be deleted");
             return Ok(());
         }
         if self.personality_items.len() <= 1 {
@@ -71,7 +78,7 @@ impl App {
 
         let name = self
             .personality_items
-            .get(self.personality_selected_index.saturating_sub(1))
+            .get(self.personality_selected_index.saturating_sub(2))
             .cloned()
             .unwrap_or_else(crate::services::personality::default_personality_name);
 
@@ -84,7 +91,7 @@ impl App {
             }
         }
 
-        let total_items = self.personality_items.len() + 1;
+        let total_items = self.personality_items.len() + 2;
         if self.personality_selected_index >= total_items && self.personality_selected_index > 0 {
             self.personality_selected_index = total_items.saturating_sub(1);
         }
@@ -96,9 +103,16 @@ impl App {
         if self.personality_selected_index == 0 {
             return Ok(());
         }
+        if self.personality_selected_index == 1 {
+            if let Err(error) = crate::services::memories::open_memories_in_new_terminal() {
+                crate::services::memories::open_memories_in_place()?;
+                self.add_system_message(&format!("Memories editor error: {}", error));
+            }
+            return Ok(());
+        }
         if let Some(name) = self
             .personality_items
-            .get(self.personality_selected_index.saturating_sub(1))
+            .get(self.personality_selected_index.saturating_sub(2))
             .cloned()
         {
             self.set_active_personality(&name)?;
@@ -118,12 +132,12 @@ impl App {
                 .iter()
                 .position(|name| name == active)
             {
-                self.personality_selected_index = index + 1;
+                self.personality_selected_index = index + 2;
                 return Ok(());
             }
         }
 
-        self.personality_selected_index = if self.personality_items.is_empty() { 0 } else { 1 };
+        self.personality_selected_index = if self.personality_items.is_empty() { 0 } else { 2 };
         if let Some(first) = self.personality_items.first().cloned() {
             self.personality_name = Some(first);
         }
@@ -155,7 +169,7 @@ impl<'a> PersonalityNavigable<'a> {
 
 impl<'a> Navigable for PersonalityNavigable<'a> {
     fn get_item_count(&self) -> usize {
-        self.app.personality_items.len() + 1
+        self.app.personality_items.len() + 2
     }
 
     fn get_selected_index(&self) -> usize {

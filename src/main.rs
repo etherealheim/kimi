@@ -181,7 +181,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                         AppMode::ModelSelection => handle_model_selection(app, key.code)?,
                         AppMode::Connect => handle_connect_mode(app, key.code)?,
                         AppMode::ApiKeyInput => handle_api_key_input_mode(app, key.code)?,
-                        AppMode::History => handle_history_mode(app, key.code)?,
+                        AppMode::History => handle_history_mode(app, key.code, key.modifiers)?,
                         AppMode::Help => handle_help_mode(app, key.code)?,
                         AppMode::PersonalitySelection => {
                             handle_personality_selection_mode(app, key.code)?
@@ -623,11 +623,31 @@ fn is_in_chat_history(column: u16, row: u16) -> Result<bool> {
         && row < history_area.y + history_area.height)
 }
 
-fn handle_history_mode(app: &mut App, key_code: KeyCode) -> Result<()> {
+fn handle_history_mode(app: &mut App, key_code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+    if app.history_delete_all_active {
+        match key_code {
+            KeyCode::Esc => app.cancel_history_delete_all(),
+            KeyCode::Enter => app.confirm_history_delete_all()?,
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => {
+                app.toggle_history_delete_all_choice();
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+    let control_pressed = modifiers.contains(KeyModifiers::CONTROL);
     if app.history_filter_active {
+        if control_pressed && key_code == KeyCode::Char('f') {
+            app.toggle_history_filter();
+            return Ok(());
+        }
         match key_code {
             KeyCode::Esc => app.toggle_history_filter(),
-            KeyCode::Char(character) => app.add_history_filter_char(character),
+            KeyCode::Char(character) => {
+                if !control_pressed {
+                    app.add_history_filter_char(character);
+                }
+            }
             KeyCode::Backspace => app.remove_history_filter_char(),
             KeyCode::Enter
             | KeyCode::Left
@@ -655,11 +675,25 @@ fn handle_history_mode(app: &mut App, key_code: KeyCode) -> Result<()> {
             | KeyCode::Modifier(_) => {}
         }
     } else {
+        if control_pressed && key_code == KeyCode::Char('f') {
+            app.toggle_history_filter();
+            return Ok(());
+        }
+        if key_code == KeyCode::Delete && modifiers.contains(KeyModifiers::SHIFT) {
+            app.open_history_delete_all();
+            return Ok(());
+        }
         match key_code {
             KeyCode::Esc => app.close_history(),
             KeyCode::Enter => app.load_history_conversation()?,
             KeyCode::Delete => app.delete_history_conversation()?,
-            KeyCode::Char('/') => app.toggle_history_filter(),
+            KeyCode::Char('/') => app.open_command_menu(),
+            KeyCode::Char(character) => {
+                if !control_pressed {
+                    app.toggle_history_filter();
+                    app.add_history_filter_char(character);
+                }
+            }
             KeyCode::Up => app.previous_history_item(),
             KeyCode::Down => app.next_history_item(),
             KeyCode::Backspace
@@ -673,7 +707,6 @@ fn handle_history_mode(app: &mut App, key_code: KeyCode) -> Result<()> {
             | KeyCode::BackTab
             | KeyCode::Insert
             | KeyCode::F(_)
-            | KeyCode::Char(_)
             | KeyCode::Null
             | KeyCode::CapsLock
             | KeyCode::ScrollLock

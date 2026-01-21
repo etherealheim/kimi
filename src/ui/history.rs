@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::app::App;
 use crate::ui::components;
+use crate::ui::utils::centered_rect;
 
 pub fn render_history_view(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -23,6 +24,9 @@ pub fn render_history_view(f: &mut Frame, app: &App) {
         render_history_header(f, app, *header);
         render_history_list(f, app, *list);
         render_history_footer(f, app, *footer);
+    }
+    if app.history_delete_all_active {
+        render_history_delete_all_modal(f, app);
     }
 }
 
@@ -62,37 +66,45 @@ fn render_history_list(f: &mut Frame, app: &App, area: Rect) {
     let mut selectable_item_count = 0;
     let mut selected_item_index: Option<usize> = None;
 
-    // Add filter input if active
+    let filter_content = app.history_filter.content();
+    let filter_placeholder = if filter_content.is_empty() {
+        "Filter history..."
+    } else {
+        filter_content
+    };
+    let filter_style = if app.history_filter_active {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let mut filter_spans = vec![
+        Span::styled(" ", Style::default()),
+        Span::styled(" ^F ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+        Span::styled(" ", Style::default()),
+        Span::styled(filter_placeholder, filter_style),
+    ];
     if app.history_filter_active {
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled(" ", Style::default()),
-            Span::styled(" / ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-            Span::styled(" ", Style::default()),
-            Span::styled(
-                app.history_filter.content(),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled(
-                "█",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::SLOW_BLINK),
-            ),
-        ])));
-        items.push(ListItem::new(Line::from("")));
+        filter_spans.push(Span::styled(
+            "█",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::SLOW_BLINK),
+        ));
     }
+    items.push(ListItem::new(Line::from(filter_spans)));
+    items.push(ListItem::new(Line::from("")));
     items.push(ListItem::new(Line::from("")));
 
     if app.history_conversations.is_empty() {
         // Better empty state with helpful message
         items.push(ListItem::new(Line::from("")));
         items.push(ListItem::new(Line::from(vec![
-            Span::styled("    ", Style::default()),
+            Span::styled("  ", Style::default()),
             Span::styled("No conversations yet", Style::default().fg(Color::DarkGray)),
         ])));
         items.push(ListItem::new(Line::from("")));
         items.push(ListItem::new(Line::from(vec![
-            Span::styled("    Press ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Press ", Style::default().fg(Color::DarkGray)),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::styled(" to start a new chat", Style::default().fg(Color::DarkGray)),
         ])));
@@ -242,12 +254,14 @@ fn wrap_summary_text(text: &str, max_width: usize, max_lines: usize) -> Vec<Stri
 
 fn render_history_footer(f: &mut Frame, app: &App, area: Rect) {
     let keybindings: &[(&str, &str)] = if app.history_filter_active {
-        &[("Type", "filter"), ("Esc", "cancel")]
+        &[("Type", "filter"), ("Esc", "done")]
+    } else if app.history_delete_all_active {
+        &[("Enter", "confirm"), ("Esc", "cancel"), ("←/→", "choose")]
     } else {
         &[
             ("Enter", "load"),
             ("Del", "delete"),
-            ("/", "search"),
+            ("/", "menu"),
             ("Esc", "new chat"),
         ]
     };
@@ -259,4 +273,74 @@ fn render_history_footer(f: &mut Frame, app: &App, area: Rect) {
     };
 
     components::render_navigation_footer(f, area, "HISTORY", keybindings, status);
+}
+
+fn render_history_delete_all_modal(f: &mut Frame, app: &App) {
+    let area = centered_rect(45, 30, f.area());
+    f.render_widget(ratatui::widgets::Clear, area);
+
+    f.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(vec![
+                Span::styled(" ", Style::default()),
+                Span::styled(
+                    "Delete all history?",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" ", Style::default()),
+            ]))
+            .border_style(Style::default().fg(Color::Cyan))
+            .style(Style::default().bg(Color::Black)),
+        area,
+    );
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .split(area);
+
+    let Some([content_area, buttons_area]) =
+        chunks.get(0..2).and_then(|s| <&[_; 2]>::try_from(s).ok())
+    else {
+        return;
+    };
+
+    let warning_lines = vec![
+        Line::from("This will delete all saved conversations."),
+        Line::from("This action cannot be undone."),
+    ];
+    f.render_widget(
+        Paragraph::new(warning_lines).alignment(Alignment::Center),
+        *content_area,
+    );
+
+    let delete_selected = app.history_delete_all_confirm_delete;
+    let delete_style = if delete_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let cancel_style = if !delete_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let buttons = Line::from(vec![
+        Span::styled("  Delete  ", delete_style),
+        Span::styled("    ", Style::default()),
+        Span::styled("  Cancel  ", cancel_style),
+    ]);
+
+    f.render_widget(Paragraph::new(buttons).alignment(Alignment::Center), *buttons_area);
 }

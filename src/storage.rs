@@ -233,6 +233,16 @@ impl StorageManager {
         Ok(())
     }
 
+    /// Deletes all conversations and messages
+    pub fn delete_all_conversations(&self) -> Result<()> {
+        let mut conn = self.get_connection()?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM messages", [])?;
+        tx.execute("DELETE FROM conversations", [])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Updates summary and messages for an existing conversation
     pub fn update_conversation(
         &self,
@@ -273,17 +283,21 @@ impl StorageManager {
     }
 
 
-    /// Filters conversations by summary or agent name
+    /// Filters conversations by summary, agent name, or message content
     pub fn filter_conversations(&self, filter: &str) -> Result<Vec<ConversationSummary>> {
         let conn = self.get_connection()?;
         let filter_pattern = format!("%{}%", filter);
 
         let mut stmt = conn.prepare(
-            "SELECT c.id, c.agent_name, c.summary, c.detailed_summary, c.created_at, COUNT(m.id) as msg_count
+            "SELECT c.id, c.agent_name, c.summary, c.detailed_summary, c.created_at,
+                    (SELECT COUNT(*) FROM messages m2 WHERE m2.conversation_id = c.id) as msg_count
              FROM conversations c
-             LEFT JOIN messages m ON c.id = m.conversation_id
-             WHERE c.summary LIKE ?1 OR c.agent_name LIKE ?1
-             GROUP BY c.id
+             WHERE c.summary LIKE ?1
+                OR c.agent_name LIKE ?1
+                OR EXISTS (
+                    SELECT 1 FROM messages m
+                    WHERE m.conversation_id = c.id AND m.content LIKE ?1
+                )
              ORDER BY c.created_at DESC",
         )?;
 

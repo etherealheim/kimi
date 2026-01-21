@@ -45,6 +45,7 @@ pub enum AgentEvent {
     Response(String),
     Error(String),
     SummaryGenerated(String),
+    MemoryExtracted(String),
     SystemMessage(String),
     DownloadFinished,
     DownloadProgress(u8),
@@ -54,6 +55,7 @@ pub enum AgentEvent {
 /// Main application state
 pub struct App {
     pub mode: AppMode,
+    pub previous_mode: Option<AppMode>,
     pub should_quit: bool,
     pub input: String,
     pub selected_index: usize,
@@ -69,6 +71,8 @@ pub struct App {
     pub next_attachment_id: usize,
     pub current_agent: Option<Agent>,
     pub is_loading: bool,
+    pub is_searching: bool,
+    pub pending_search_notice: Option<String>,
     pub last_response: Option<String>,
     pub agent_manager: Option<AgentManager>,
     pub tts_service: Option<TTSService>,
@@ -103,6 +107,8 @@ pub struct App {
     pub history_selected_index: usize,
     pub history_filter: TextInput,
     pub history_filter_active: bool,
+    pub history_delete_all_active: bool,
+    pub history_delete_all_confirm_delete: bool,
     pub storage: Option<StorageManager>,
     pub is_generating_summary: bool,
     pub current_conversation_id: Option<i64>,
@@ -179,6 +185,7 @@ impl App {
 
         Self {
             mode: AppMode::Chat, // Start directly in chat mode
+            previous_mode: None,
             should_quit: false,
             input: String::new(),
             selected_index: 0,
@@ -192,6 +199,8 @@ impl App {
             next_attachment_id: 1,
             current_agent: None, // Will be set in init_services
             is_loading: false,
+            is_searching: false,
+            pending_search_notice: None,
             last_response: None,
             agent_manager: None,
             tts_service: None,
@@ -223,6 +232,8 @@ impl App {
             history_selected_index: 0,
             history_filter: TextInput::new(),
             history_filter_active: false,
+            history_delete_all_active: false,
+            history_delete_all_confirm_delete: false,
             storage: None,
             is_generating_summary: false,
             current_conversation_id: None,
@@ -262,6 +273,7 @@ impl App {
             config.elevenlabs.model.clone(),
         ));
         self.storage = StorageManager::new().ok();
+        let _ = crate::services::memories::ensure_memories();
 
         let (tx, rx) = channel();
         self.agent_tx = Some(tx);

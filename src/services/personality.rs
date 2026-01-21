@@ -6,6 +6,7 @@ use std::process::Command;
 
 const DEFAULT_PERSONALITY_NAME: &str = "Casca";
 const MY_PERSONALITY_NAME: &str = "My personality";
+const MEMORIES_ENTRY_NAME: &str = "Memories";
 const PERSONALITY_EXTENSION: &str = "md";
 const LEGACY_PERSONALITY_EXTENSION: &str = "txt";
 
@@ -18,8 +19,7 @@ pub fn my_personality_name() -> String {
 }
 
 pub fn list_personalities() -> Result<Vec<String>> {
-    let personality_dir = ensure_personality_dir()?;
-    migrate_legacy_personality_files(&personality_dir)?;
+    let personality_dir = personality_dir()?;
     let mut names = Vec::new();
     for entry in fs::read_dir(&personality_dir)? {
         let entry = entry?;
@@ -28,7 +28,7 @@ pub fn list_personalities() -> Result<Vec<String>> {
             continue;
         }
         if let Some(name) = path.file_stem().and_then(|name| name.to_str()) {
-            if name != MY_PERSONALITY_NAME {
+            if name != MY_PERSONALITY_NAME && name != MEMORIES_ENTRY_NAME {
                 names.push(name.to_string());
             }
         }
@@ -175,13 +175,11 @@ pub fn open_personality_in_place(name: &str) -> Result<()> {
     }
 }
 
-fn ensure_personality_dir() -> Result<PathBuf> {
-    let config_dir = ProjectDirs::from("", "", "kimi")
-        .ok_or_else(|| color_eyre::eyre::eyre!("Could not determine config directory"))?
-        .config_dir()
-        .to_path_buf();
-    let personality_dir = config_dir.join("personalities");
+pub fn personality_dir() -> Result<PathBuf> {
+    let base_dir = project_data_dir()?;
+    let personality_dir = base_dir.join("personalities");
     fs::create_dir_all(&personality_dir)?;
+    migrate_legacy_personality_dir(&personality_dir)?;
     Ok(personality_dir)
 }
 
@@ -192,7 +190,7 @@ fn personality_path(name: &str) -> Result<PathBuf> {
             "Personality name cannot be empty"
         ));
     }
-    let personality_dir = ensure_personality_dir()?;
+    let personality_dir = personality_dir()?;
     Ok(personality_dir.join(format!("{}.{}", trimmed, PERSONALITY_EXTENSION)))
 }
 
@@ -203,11 +201,24 @@ fn legacy_personality_path(name: &str) -> Result<PathBuf> {
             "Personality name cannot be empty"
         ));
     }
-    let personality_dir = ensure_personality_dir()?;
-    Ok(personality_dir.join(format!(
+    let legacy_dir = legacy_personality_dir()?;
+    Ok(legacy_dir.join(format!(
         "{}.{}",
         trimmed, LEGACY_PERSONALITY_EXTENSION
     )))
+}
+
+fn project_data_dir() -> Result<PathBuf> {
+    let current_dir = std::env::current_dir()?;
+    Ok(current_dir.join("data"))
+}
+
+fn legacy_personality_dir() -> Result<PathBuf> {
+    let config_dir = ProjectDirs::from("", "", "kimi")
+        .ok_or_else(|| color_eyre::eyre::eyre!("Could not determine config directory"))?
+        .config_dir()
+        .to_path_buf();
+    Ok(config_dir.join("personalities"))
 }
 
 fn try_spawn_terminal(program: &str, args: &[String]) -> bool {
@@ -217,8 +228,8 @@ fn try_spawn_terminal(program: &str, args: &[String]) -> bool {
 fn default_personality_template() -> String {
     [
         "You are Kimi, a helpful AI assistant.",
-        "Be concise, friendly, and direct.",
-        "Keep responses short and to the point unless asked for details.",
+        "Be warm, thoughtful, and clear.",
+        "Share enough detail to be genuinely helpful, with a short summary first.",
     ]
     .join("\n")
 }
@@ -257,5 +268,29 @@ fn migrate_legacy_personality_files(personality_dir: &PathBuf) -> Result<()> {
             fs::rename(&path, target)?;
         }
     }
+    Ok(())
+}
+
+fn migrate_legacy_personality_dir(target_dir: &PathBuf) -> Result<()> {
+    let legacy_dir = legacy_personality_dir()?;
+    if !legacy_dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&legacy_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(file_name) = path.file_name() else {
+            continue;
+        };
+        let dest = target_dir.join(file_name);
+        if dest.exists() {
+            continue;
+        }
+        let _ = fs::copy(&path, &dest);
+    }
+    migrate_legacy_personality_files(target_dir)?;
     Ok(())
 }

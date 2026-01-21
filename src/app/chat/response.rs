@@ -12,6 +12,7 @@ impl App {
             match event {
                 AgentEvent::Response(response) => {
                     self.is_loading = false;
+                    self.is_searching = false;
                     self.last_response = Some(response.clone());
                     let display_name = if self.personality_enabled {
                         self.personality_name.clone()
@@ -39,6 +40,7 @@ impl App {
                 }
                 AgentEvent::Error(error) => {
                     self.is_loading = false;
+                    self.is_searching = false;
                     self.chat_history.push(ChatMessage {
                         role: MessageRole::System,
                         content: format!("Error: {}", error),
@@ -101,6 +103,39 @@ impl App {
                         }
                     }
                     self.open_history();
+                }
+                AgentEvent::MemoryExtracted(payload) => {
+                    let trimmed = payload.trim();
+                    if !trimmed.is_empty() {
+                        let extracted = crate::services::memories::parse_memory_blocks(trimmed);
+                        let extracted = crate::services::memories::filter_extracted_blocks(extracted);
+                        if !extracted.contexts.is_empty() {
+                            match crate::services::memories::read_memories() {
+                                Ok(existing) => {
+                                    let current =
+                                        crate::services::memories::parse_memory_blocks(&existing);
+                                    let merged = crate::services::memories::merge_memory_blocks(
+                                        current,
+                                        extracted,
+                                    );
+                                    if let Err(error) =
+                                        crate::services::memories::write_memories(&merged)
+                                    {
+                                        self.add_system_message(&format!(
+                                            "Memories update error: {}",
+                                            error
+                                        ));
+                                    }
+                                }
+                                Err(error) => {
+                                    self.add_system_message(&format!(
+                                        "Memories read error: {}",
+                                        error
+                                    ));
+                                }
+                            }
+                        }
+                    }
                 }
                 AgentEvent::SystemMessage(message) => {
                     self.chat_history.push(ChatMessage {

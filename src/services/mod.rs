@@ -2,6 +2,7 @@ pub mod tts;
 pub mod weather;
 pub mod clipboard;
 pub mod personality;
+pub mod memories;
 pub mod venice;
 pub mod brave;
 pub mod link_download;

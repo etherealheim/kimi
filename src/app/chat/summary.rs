@@ -98,6 +98,47 @@ Conversation: {}",
         });
     }
 
+    /// Spawns a background thread to extract persistent memories
+    fn spawn_memory_extraction_thread(
+        agent: crate::agents::Agent,
+        manager: crate::agents::AgentManager,
+        context: String,
+        agent_tx: std::sync::mpsc::Sender<AgentEvent>,
+    ) {
+        let extraction_prompt = format!(
+            "Extract persistent user memories from this conversation.\n\
+Return only blocks in the exact format below and nothing else.\n\
+Use empty output if nothing is relevant.\n\
+[context:likes]\n\
+<value | context=general | source=explicit | confidence=high>\n\
+[context:dislikes]\n\
+<value | context=general | source=explicit | confidence=high>\n\
+[context:location]\n\
+<value | context=general | source=explicit | confidence=high>\n\
+[context:timezone]\n\
+<value | context=general | source=explicit | confidence=high>\n\
+[context:tools]\n\
+<value | context=general | source=explicit | confidence=high>\n\
+[context:projects]\n\
+<value | context=general | source=explicit | confidence=high>\n\
+[context:topics]\n\
+<value | context=general | source=explicit | confidence=high>\n\n\
+Conversation: {}",
+            context.chars().take(600).collect::<String>()
+        );
+
+        std::thread::spawn(move || {
+            let messages = vec![
+                AgentChatMessage::system(
+                    "You extract structured user memory. Follow the format exactly.",
+                ),
+                AgentChatMessage::user(&extraction_prompt),
+            ];
+            let response = manager.chat(&agent, &messages).unwrap_or_default();
+            let _ = agent_tx.send(AgentEvent::MemoryExtracted(response));
+        });
+    }
+
     pub fn exit_chat_to_history(&mut self) -> Result<()> {
         if self.chat_history.is_empty() {
             self.open_history();
@@ -110,7 +151,13 @@ Conversation: {}",
         let context = self.build_summary_context();
         let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
 
-        Self::spawn_summary_generation_thread(agent, manager, context, agent_tx);
+        Self::spawn_summary_generation_thread(
+            agent.clone(),
+            manager.clone(),
+            context.clone(),
+            agent_tx.clone(),
+        );
+        Self::spawn_memory_extraction_thread(agent, manager, context, agent_tx);
 
         Ok(())
     }

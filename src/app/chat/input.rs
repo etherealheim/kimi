@@ -1,8 +1,10 @@
 use crate::app::types::{ChatAttachment, ChatMessage, MessageRole};
 use crate::app::App;
+use crate::services::weather::WeatherService;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{Datelike, Local};
 use color_eyre::Result;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 impl App {
@@ -33,16 +35,34 @@ impl App {
         self.chat_input.clear();
         self.reset_chat_scroll();
 
+        if let Some(reply) = try_handle_weather_question(&user_message)? {
+            self.add_assistant_message(&reply);
+            return Ok(());
+        }
+
+        if let Some(reply) = try_handle_time_question(&user_message) {
+            self.add_assistant_message(&reply);
+            return Ok(());
+        }
+
         if let Some(reply) = try_handle_date_question(&user_message) {
             self.add_assistant_message(&reply);
             return Ok(());
         }
 
         self.add_user_message_to_history(&user_message);
+        self.pending_search_notice = None;
         self.is_loading = true;
+        self.is_searching = self.should_mark_searching(&user_message);
 
         let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
         let mut messages = self.build_agent_messages(&agent.system_prompt);
+        if let Some(notice) = self.pending_search_notice.take() {
+            self.is_loading = false;
+            self.is_searching = false;
+            self.add_assistant_message(&notice);
+            return Ok(());
+        }
         if !self.chat_attachments.is_empty() {
             let images = self.build_attachment_images()?;
             self.apply_images_to_last_user_message(&mut messages, images);
@@ -117,6 +137,13 @@ impl App {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    fn should_mark_searching(&self, query: &str) -> bool {
+        if self.connect_brave_key.trim().is_empty() {
+            return false;
+        }
+        super::agent::should_use_brave_search(query)
     }
 
     fn build_attachment_images(&mut self) -> Result<Vec<String>> {
@@ -323,6 +350,9 @@ fn remove_attachment_tokens(content: &str) -> String {
 fn try_handle_date_question(input: &str) -> Option<String> {
     let lowered = input.trim().to_lowercase();
     let today = chrono::Local::now().date_naive();
+    if !should_handle_date_question(&lowered) {
+        return None;
+    }
     if lowered.contains("day after tomorrow") {
         let date = today + chrono::Duration::days(2);
         return Some(format!("The day after tomorrow is {}.", date.format("%A, %B %d, %Y")));
@@ -366,6 +396,197 @@ fn try_handle_date_question(input: &str) -> Option<String> {
         ));
     }
     None
+}
+
+#[derive(Debug, Deserialize)]
+struct WeatherSnapshot {
+    location: String,
+    time: String,
+    temperature_c: f32,
+    wind_kph: f32,
+}
+
+fn try_handle_weather_question(input: &str) -> Result<Option<String>> {
+    let lowered = input.trim().to_lowercase();
+    if !should_handle_weather_question(&lowered) {
+        return Ok(None);
+    }
+    if references_other_location(&lowered) {
+        return Ok(Some(
+            "I can only fetch current weather for Prague right now.".to_string(),
+        ));
+    }
+    let service = WeatherService::new();
+    match service.fetch_current_weather_json() {
+        Ok(payload) => match serde_json::from_str::<WeatherSnapshot>(&payload) {
+            Ok(snapshot) => Ok(Some(format_weather_snapshot(&snapshot))),
+            Err(_) => Ok(Some(
+                "I couldn't read the weather data just now.".to_string(),
+            )),
+        },
+        Err(_) => Ok(Some(
+            "I couldn't fetch the current weather right now.".to_string(),
+        )),
+    }
+}
+
+fn format_weather_snapshot(snapshot: &WeatherSnapshot) -> String {
+    let temperature = format!("{:.1}", snapshot.temperature_c);
+    let wind = format!("{:.0}", snapshot.wind_kph);
+    format!(
+        "Current weather in {}: {}°C, wind {} km/h (as of {}).",
+        snapshot.location, temperature, wind, snapshot.time
+    )
+}
+
+fn should_handle_weather_question(lowered: &str) -> bool {
+    if lowered.is_empty() {
+        return false;
+    }
+    let weather_terms = [
+        "weather",
+        "forecast",
+        "temperature",
+        "temp",
+        "rain",
+        "snow",
+        "wind",
+        "humidity",
+    ];
+    if !contains_any(lowered, &weather_terms) {
+        return false;
+    }
+    let question_prefixes = [
+        "what ",
+        "when ",
+        "which ",
+        "is ",
+        "does ",
+        "do ",
+        "tell me",
+        "can you",
+        "could you",
+    ];
+    let looks_like_question =
+        lowered.contains('?') || question_prefixes.iter().any(|prefix| lowered.starts_with(prefix));
+    looks_like_question || lowered.starts_with("weather") || lowered.starts_with("forecast")
+}
+
+fn references_other_location(lowered: &str) -> bool {
+    let location_markers = [" in ", " at ", " for ", " near "];
+    let mentions_location = location_markers
+        .iter()
+        .any(|marker| lowered.contains(marker));
+    let mentions_prague = lowered.contains("prague") || lowered.contains("praha");
+    mentions_location && !mentions_prague
+}
+
+fn try_handle_time_question(input: &str) -> Option<String> {
+    let lowered = input.trim().to_lowercase();
+    if !should_handle_time_question(&lowered) {
+        return None;
+    }
+    let now = chrono::Local::now();
+    let timezone = now.format("%Z").to_string();
+    if timezone.trim().is_empty() {
+        return Some(format!("It's {}.", now.format("%H:%M:%S")));
+    }
+    Some(format!(
+        "It's {} {}.",
+        now.format("%H:%M:%S"),
+        timezone
+    ))
+}
+
+fn should_handle_date_question(lowered: &str) -> bool {
+    if lowered.is_empty() {
+        return false;
+    }
+    let question_prefixes = [
+        "what ",
+        "when ",
+        "which ",
+        "is ",
+        "does ",
+        "do ",
+        "tell me",
+        "can you",
+        "could you",
+    ];
+    let looks_like_question =
+        lowered.contains('?') || question_prefixes.iter().any(|prefix| lowered.starts_with(prefix));
+    if !looks_like_question {
+        return false;
+    }
+    let explicit = [
+        "what day",
+        "what date",
+        "which day",
+        "what's the date",
+        "what is the date",
+        "what day is",
+        "what's today",
+        "what is today",
+        "today's date",
+        "tomorrow's date",
+        "yesterday's date",
+    ];
+    if contains_any(lowered, &explicit) {
+        return true;
+    }
+    let date_nouns = [
+        " day",
+        " day?",
+        " day.",
+        " day!",
+        " date",
+        " date?",
+        " date.",
+        " date!",
+        " weekday",
+    ];
+    let uses_date_noun = contains_any(lowered, &date_nouns);
+    let subject_forms = [
+        "today is",
+        "tomorrow is",
+        "yesterday was",
+        "day after tomorrow is",
+        "day before yesterday was",
+    ];
+    let uses_subject_form = contains_any(lowered, &subject_forms);
+    uses_date_noun || uses_subject_form
+}
+
+fn should_handle_time_question(lowered: &str) -> bool {
+    if lowered.is_empty() {
+        return false;
+    }
+    let question_prefixes = [
+        "what ",
+        "when ",
+        "which ",
+        "is ",
+        "does ",
+        "do ",
+        "tell me",
+        "can you",
+        "could you",
+    ];
+    let looks_like_question =
+        lowered.contains('?') || question_prefixes.iter().any(|prefix| lowered.starts_with(prefix));
+    if !looks_like_question {
+        return false;
+    }
+    let explicit = [
+        "what time",
+        "what's the time",
+        "what is the time",
+        "current time",
+        "time is it",
+        "time now",
+    ];
+    let time_terms = [" time", " clock", " timezone"];
+    contains_any(lowered, &explicit) || contains_any(lowered, &time_terms)
 }
 
 fn parse_day_offset(text: &str) -> Option<i64> {
@@ -441,4 +662,8 @@ fn parse_weekday(text: &str) -> Option<chrono::Weekday> {
         return Some(chrono::Weekday::Sun);
     }
     None
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
 }

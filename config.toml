@@ -1,0 +1,24 @@
+[ollama]
+url = "http://localhost:11434"
+
+[elevenlabs]
+api_key = ""
+voice_id = "ZDLP92lTmp7Obqq7My6Y"
+model = "eleven_turbo_v2_5"
+
+[venice]
+api_key = ""
+
+[brave]
+api_key = ""
+
+[personality]
+selected = "sassy"
+
+[agents.chat]
+model = "venice-uncensored"
+system_prompt = "You are a helpful assistant. Answer questions clearly and concisely."
+
+[agents.translate]
+model = "translategemma:latest"
+system_prompt = "You are a translation assistant. Translate text between languages clearly and accurately."

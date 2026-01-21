@@ -8,6 +8,7 @@ impl App {
         self.history_selected_index = 0;
         self.history_filter.clear();
         self.history_filter_active = false;
+        self.history_delete_all_active = false;
         self.load_history_list();
         // Stop TTS when opening history
         if let Some(tts) = &self.tts_service {
@@ -26,6 +27,7 @@ impl App {
             let agent_name = agent.name.clone();
             let _ = self.load_agent(&agent_name);
         }
+        self.history_delete_all_active = false;
     }
 
     fn load_history_list(&mut self) {
@@ -37,6 +39,9 @@ impl App {
                     .filter_conversations(self.history_filter.content())
                     .unwrap_or_default()
             };
+        }
+        if self.history_selected_index >= self.history_conversations.len() {
+            self.history_selected_index = self.history_conversations.len().saturating_sub(1);
         }
     }
 
@@ -98,6 +103,37 @@ impl App {
         {
             self.history_selected_index -= 1;
         }
+        Ok(())
+    }
+
+    pub fn open_history_delete_all(&mut self) {
+        self.history_delete_all_active = true;
+        self.history_delete_all_confirm_delete = false;
+    }
+
+    pub fn cancel_history_delete_all(&mut self) {
+        self.history_delete_all_active = false;
+        self.history_delete_all_confirm_delete = false;
+    }
+
+    pub fn toggle_history_delete_all_choice(&mut self) {
+        self.history_delete_all_confirm_delete = !self.history_delete_all_confirm_delete;
+    }
+
+    pub fn confirm_history_delete_all(&mut self) -> Result<()> {
+        if !self.history_delete_all_confirm_delete {
+            self.cancel_history_delete_all();
+            return Ok(());
+        }
+        let storage = self
+            .storage
+            .as_ref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("Storage not initialized"))?;
+        storage.delete_all_conversations()?;
+        self.history_conversations.clear();
+        self.history_selected_index = 0;
+        self.history_delete_all_active = false;
+        self.show_status_toast("HISTORY CLEARED");
         Ok(())
     }
 

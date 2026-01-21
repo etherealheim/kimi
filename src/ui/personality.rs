@@ -115,10 +115,29 @@ fn render_personality_list(f: &mut Frame, app: &App, area: Rect) {
     if is_my_selected {
         selected_list_index = Some(items.len().saturating_sub(1));
     }
+    let is_memories_selected = app.personality_selected_index == 1;
+    let memories_style = if is_memories_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    items.push(ListItem::new(Line::from(vec![
+        Span::styled(
+            if is_memories_selected { " > " } else { "   " },
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::styled("Memories", memories_style),
+    ])));
+    if is_memories_selected {
+        selected_list_index = Some(items.len().saturating_sub(1));
+    }
     items.push(ListItem::new(Line::from("")));
 
     for (index, name) in app.personality_items.iter().enumerate() {
-        let list_index = index + 1;
+        let list_index = index + 2;
         let is_selected = list_index == app.personality_selected_index;
         let is_active = app.personality_name.as_deref() == Some(name.as_str());
 
