@@ -11,6 +11,23 @@ use super::components;
 
 use crate::app::{App, MessageRole};
 
+const KIMI_ASCII_ART: &str = r"###@@@@@@@#####S%?**++++++++;++*???*???%###@%?%###
+##@@@@@@@######SS%%?**+++**?%????****???S##S?*?#@S
+#@@@@@@@@#######S%%%??*+***??%%%%%?***??%S%%*?#@#?
+#@@@@@@@@@######S%%???+;++*%??%%%%*++**?%%?%?#@@S?
+#@@@@@@@@@######S??*??+;+++****+++++++*?%??%S###%?
+#@@@@@@@@#######%???%?;+++;;+++++;++**?%%%S####S%*
+##@@@@@@@@#####S%??%%*++++++++++++***??S#######%%*
+###@@#@@@@####S%???S%+;+*+*+++++++***?%#######S%%+
+####@#@@@@@###%%???%%?****+++++++***??S###@##S%%%;
+######@@#@@###S%%%%??***+++;++++***??S##@####S%%%;
+##########@#@@#S%%SS%%??????******?%S########S%%%+
+S###########@@@@#%SS%???????***??%S####@######S%%*
+SSS##########@@@@#S%????**++**?%S###@@#######SS%?*
+SSSS##########@@@@#S?****+**??%S###########S???***
+SS############@@@@@@##SS%????%S####%S####%%?**+++*
+S##############@@@@@@@#S%???%SSS####S##S?%?*++++++";
+
 /// Primary chat view with header, messages, input, and footer
 pub fn render_chat_view(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -148,24 +165,44 @@ impl MessageStyles {
 
 /// Adds welcome message lines when chat is empty
 fn add_welcome_message(lines: &mut Vec<Line>, max_width: usize) {
+    let art_style = Style::default().fg(Color::Magenta);
     let welcome_style = Style::default().fg(Color::DarkGray);
-    let paragraphs = [
-        "Hi! I'm Kimi, your helpful companion.",
-        "I can translate languages, switch up my personality, read text aloud, and download videos.",
-        "What is on your mind today?",
-    ];
-
+    
+    // Add ASCII art
     lines.push(Line::from(""));
-    for paragraph in paragraphs {
-        let wrapped = wrap_text(paragraph, max_width, 1);
-        for line in wrapped {
-            lines.push(Line::from(vec![
-                Span::styled("  ", welcome_style),
-                Span::styled(line, welcome_style),
-            ]));
-        }
-        lines.push(Line::from(""));
+    for art_line in KIMI_ASCII_ART.lines() {
+        let art_width = art_line.len();
+        let padding = if max_width > art_width {
+            (max_width - art_width) / 2
+        } else {
+            1
+        };
+        
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(padding)),
+            Span::styled(art_line, art_style),
+        ]));
     }
+    
+    // Add welcome text
+    lines.push(Line::from(""));
+    let greeting = "Hi! I'm Kimi, your helpful companion.";
+    let wrapped = wrap_text(greeting, max_width, 1);
+    for line in wrapped {
+        lines.push(Line::from(vec![
+            Span::styled("  ", welcome_style),
+            Span::styled(line, welcome_style),
+        ]));
+    }
+    
+    lines.push(Line::from(""));
+    let prompt = "What is on your mind today?";
+    let prompt_style = Style::default().fg(Color::Cyan);
+    lines.push(Line::from(vec![
+        Span::styled("  ", welcome_style),
+        Span::styled(prompt, prompt_style),
+    ]));
+    lines.push(Line::from(""));
 }
 
 /// Renders a system message (compact, subtle styling)
