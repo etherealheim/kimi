@@ -89,7 +89,7 @@ impl App {
                 }
                 "Venice AI" => {
                     let candidate_key = self.connect_api_key_input.content().to_string();
-                    if crate::services::venice::fetch_text_models(&candidate_key).is_ok() {
+                    if crate::agents::venice::fetch_text_models(&candidate_key).is_ok() {
                         self.connect_venice_key = candidate_key;
                         if let Ok(mut config) = Config::load() {
                             config.venice.api_key = self.connect_venice_key.clone();

@@ -25,26 +25,28 @@ impl App {
 
         let mut available_models: HashMap<String, Vec<crate::app::AvailableModel>> =
             HashMap::new();
-        let agent_order = ["translate", "chat"];
+        let agent_order = ["translate", "chat", "routing"];
         for agent_name in agent_order {
             let mut models = build_ollama_models(agent_name, &installed_models);
-            if let Some(venice_models) = &venice_models {
-                for model_name in venice_models {
-                    models.push(crate::app::AvailableModel {
-                        name: model_name.clone(),
-                        source: ModelSource::VeniceAPI,
-                        is_available: true,
-                    });
-                }
-            }
-            if agent_name == "chat" {
-                if let Some(gab_models) = &gab_models {
-                    for model_name in gab_models {
+            if agent_name != "routing" {
+                if let Some(venice_models) = &venice_models {
+                    for model_name in venice_models {
                         models.push(crate::app::AvailableModel {
                             name: model_name.clone(),
-                            source: ModelSource::GabAI,
+                            source: ModelSource::VeniceAPI,
                             is_available: true,
                         });
+                    }
+                }
+                if agent_name == "chat" {
+                    if let Some(gab_models) = &gab_models {
+                        for model_name in gab_models {
+                            models.push(crate::app::AvailableModel {
+                                name: model_name.clone(),
+                                source: ModelSource::GabAI,
+                                is_available: true,
+                            });
+                        }
                     }
                 }
             }
@@ -169,7 +171,7 @@ impl App {
         self.model_selection_items.clear();
 
         // Define agent order
-        let agent_order = vec!["translate", "chat"];
+        let agent_order = vec!["translate", "chat", "routing"];
 
         for agent_name in agent_order {
             if let Some(models) = self.available_models.get(agent_name) {
@@ -229,8 +231,15 @@ fn build_ollama_models(
     installed_models: &[String],
 ) -> Vec<crate::app::AvailableModel> {
     let mut models = Vec::new();
-    let _ = agent_name;
+    let is_routing_agent = agent_name == "routing";
     for model_name in installed_models {
+        let is_function_model = is_function_calling_model(model_name);
+        if is_routing_agent && !is_function_model {
+            continue;
+        }
+        if !is_routing_agent && is_function_model {
+            continue;
+        }
         models.push(crate::app::AvailableModel {
             name: model_name.to_string(),
             source: ModelSource::Ollama,
@@ -245,7 +254,7 @@ fn fetch_venice_models(api_key: &str) -> Option<Vec<String>> {
         return None;
     }
     let allowed = ["venice-uncensored", "kimi-k2-thinking", "grok-fast"];
-    crate::services::venice::fetch_text_models(api_key)
+    crate::agents::venice::fetch_text_models(api_key)
         .ok()
         .map(|models| {
             models
@@ -259,7 +268,12 @@ fn fetch_gab_models(api_key: &str) -> Option<Vec<String>> {
     if api_key.trim().is_empty() {
         return None;
     }
-    Some(vec!["Arya".to_string()])
+    Some(vec!["arya".to_string()])
+}
+
+fn is_function_calling_model(model_name: &str) -> bool {
+    let lowered = model_name.to_lowercase();
+    lowered.contains("function")
 }
 
 

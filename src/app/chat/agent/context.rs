@@ -255,6 +255,8 @@ pub fn is_week_note_query(lowered: &str) -> bool {
         "this week note",
         "this week",
         "last week",
+        "past week",
+        "previous week",
         "next week",
         "weekly checklist",
         "week checklist",

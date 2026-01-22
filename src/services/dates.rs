@@ -97,7 +97,10 @@ pub fn parse_date_reference(query: &str) -> Option<DateReference> {
     if lowered.contains("this week") {
         return Some(DateReference::Week(current_week()));
     }
-    if lowered.contains("last week") {
+    if lowered.contains("last week")
+        || lowered.contains("past week")
+        || lowered.contains("previous week")
+    {
         return Some(DateReference::Week(last_week()));
     }
     if lowered.contains("next week") {
@@ -108,7 +111,10 @@ pub fn parse_date_reference(query: &str) -> Option<DateReference> {
     if lowered.contains("this month") {
         return Some(DateReference::Range(this_month_range(today)));
     }
-    if lowered.contains("last month") {
+    if lowered.contains("last month")
+        || lowered.contains("past month")
+        || lowered.contains("previous month")
+    {
         return Some(DateReference::Range(last_month_range(today)));
     }
     if lowered.contains("next month") {
@@ -119,7 +125,10 @@ pub fn parse_date_reference(query: &str) -> Option<DateReference> {
     if lowered.contains("this year") {
         return Some(DateReference::Range(this_year_range(today)));
     }
-    if lowered.contains("last year") {
+    if lowered.contains("last year")
+        || lowered.contains("past year")
+        || lowered.contains("previous year")
+    {
         return Some(DateReference::Range(last_year_range(today)));
     }
     if lowered.contains("next year") {
@@ -300,7 +309,7 @@ fn next_year_range(today: NaiveDate) -> DateRange {
     DateRange { start, end }
 }
 
-// Relative range parsing ("last 7 days", "past 2 weeks", "last 3 months")
+// Relative range parsing ("last 7 days", "past 2 weeks", "next 3 days")
 
 fn parse_relative_range(lowered: &str, today: NaiveDate) -> Option<DateRange> {
     let tokens: Vec<&str> = lowered.split_whitespace().collect();
@@ -320,6 +329,26 @@ fn parse_relative_range(lowered: &str, today: NaiveDate) -> Option<DateRange> {
                 if tokens[i + 2] == "months" || tokens[i + 2] == "month" {
                     let start = today - chrono::Duration::days(count * 30);
                     return Some(DateRange { start, end: today });
+                }
+            }
+        }
+    }
+
+    // "next N days/weeks/months"
+    for i in 0..tokens.len().saturating_sub(2) {
+        if tokens[i] == "next" {
+            if let Ok(count) = tokens[i + 1].parse::<i64>() {
+                if tokens[i + 2] == "days" || tokens[i + 2] == "day" {
+                    let end = today + chrono::Duration::days(count);
+                    return Some(DateRange { start: today, end });
+                }
+                if tokens[i + 2] == "weeks" || tokens[i + 2] == "week" {
+                    let end = today + chrono::Duration::weeks(count);
+                    return Some(DateRange { start: today, end });
+                }
+                if tokens[i + 2] == "months" || tokens[i + 2] == "month" {
+                    let end = today + chrono::Duration::days(count * 30);
+                    return Some(DateRange { start: today, end });
                 }
             }
         }

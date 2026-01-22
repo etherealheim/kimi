@@ -1,18 +1,18 @@
 mod chat;
 pub(crate) use chat::PENDING_SUMMARY_LABEL;
-mod commands;
+mod command;
 mod connect;
 mod help;
 mod history;
-mod menu;
 mod models;
 mod navigation;
 mod personality;
 mod scroll;
+#[path = "text-input.rs"]
 mod text_input;
 mod types;
 
-pub use commands::cmd_quit;
+pub use command::cmd_quit;
 pub use navigation::Navigable;
 pub use text_input::TextInput;
 pub use types::*;
@@ -77,6 +77,7 @@ pub struct App {
     pub is_loading: bool,
     pub is_searching: bool,
     pub is_analyzing: bool,
+    pub is_fetching_notes: bool,
     pub last_response: Option<String>,
     pub agent_manager: Option<AgentManager>,
     pub tts_service: Option<TTSService>,
@@ -177,6 +178,7 @@ impl App {
         let selected_models = [
             ("translate", vec!["translategemma:latest"]),
             ("chat", vec!["gemma3:12b"]),
+            ("routing", vec!["functiongemma"]),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.into_iter().map(String::from).collect()))
@@ -207,6 +209,7 @@ impl App {
             is_loading: false,
             is_searching: false,
             is_analyzing: false,
+            is_fetching_notes: false,
             last_response: None,
             agent_manager: None,
             tts_service: None,

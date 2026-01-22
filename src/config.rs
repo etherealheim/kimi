@@ -126,6 +126,14 @@ impl Default for Config {
             },
         );
 
+        agents.insert(
+            "routing".to_string(),
+            AgentConfig {
+                model: "functiongemma".to_string(),
+                system_prompt: "Function calling router.".to_string(),
+            },
+        );
+
         Self {
             ollama: OllamaConfig {
                 url: "http://localhost:11434".to_string(),
@@ -140,7 +148,7 @@ impl Default for Config {
             },
             gab: GabConfig {
                 api_key: String::new(),
-                base_url: crate::services::gab_ai::default_base_url(),
+                base_url: crate::agents::gab_ai::default_base_url(),
             },
             brave: BraveConfig {
                 api_key: String::new(),

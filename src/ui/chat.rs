@@ -330,10 +330,19 @@ fn render_chat_history(frame: &mut Frame, app: &App, area: Rect) {
     let content_width = area.width.saturating_sub(2) as usize;
     let max_content_width = content_width.saturating_sub(6).max(1);
     let max_system_width = content_width.saturating_sub(4).max(1);
+    let visible_height = area.height.saturating_sub(2) as usize;
 
     // Welcome message if chat is empty
     if app.chat_history.is_empty() && !app.is_loading {
         add_welcome_message(&mut lines, max_content_width);
+        let total_with_padding = lines.len().saturating_add(1);
+        if total_with_padding < visible_height {
+            let pad_count = visible_height - total_with_padding;
+            let mut padding: Vec<Line> =
+                (0..pad_count).map(|_| Line::from("")).collect();
+            padding.append(&mut lines);
+            lines = padding;
+        }
     }
 
     // Build all message lines
@@ -369,6 +378,8 @@ fn render_chat_history(frame: &mut Frame, app: &App, area: Rect) {
             "analyzing"
         } else if app.is_searching {
             "searching"
+        } else if app.is_fetching_notes {
+            "fetching"
         } else {
             "thinking"
         };
@@ -396,7 +407,6 @@ fn render_chat_history(frame: &mut Frame, app: &App, area: Rect) {
 
     // Calculate viewport and scroll position
     let total_lines = lines.len();
-    let visible_height = area.height.saturating_sub(2) as usize;
     let (scroll_from_top, actual_scroll_offset) = calculate_scroll_position(
         total_lines,
         visible_height,

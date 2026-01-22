@@ -17,6 +17,7 @@ impl App {
                     self.is_loading = false;
                     self.is_searching = false;
                     self.is_analyzing = false;
+                    self.is_fetching_notes = false;
                     self.last_response = Some(response.clone());
                     let display_name = if self.personality_enabled {
                         self.personality_name.clone()
@@ -48,6 +49,7 @@ impl App {
                     self.is_loading = false;
                     self.is_searching = false;
                     self.is_analyzing = false;
+                    self.is_fetching_notes = false;
                     self.chat_history.push(ChatMessage {
                         role: MessageRole::System,
                         content: format!("Error: {}", error),
@@ -146,6 +148,7 @@ impl App {
                     self.is_loading = false;
                     self.is_searching = false;
                     self.is_analyzing = false;
+                    self.is_fetching_notes = false;
                     self.chat_history.push(ChatMessage {
                         role: MessageRole::System,
                         content: message,

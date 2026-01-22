@@ -11,7 +11,7 @@ api_key = ""
 
 [gab]
 api_key = ""
-base_url = "https://api.gab.ai/v1"
+base_url = "https://gab.ai/v1"
 
 [brave]
 api_key = ""
@@ -22,10 +22,14 @@ vault_path = "/home/ethereal/Documents/e-vault/"
 [personality]
 selected = "Casca"
 
+[agents.routing]
+model = "functiongemma:latest"
+system_prompt = "Function calling router."
+
 [agents.translate]
 model = "translategemma:latest"
 system_prompt = "You are a translation assistant. Translate text between languages clearly and accurately."
 
 [agents.chat]
-model = "Arya"
+model = "venice-uncensored"
 system_prompt = "Kimi base prompt is loaded from data/personalities/Kimi.md."

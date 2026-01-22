@@ -1,5 +1,6 @@
 use crate::app::types::{ChatAttachment, ChatMessage, MessageRole};
 use crate::app::App;
+use crate::app::chat::agent::intent::classify_query;
 use crate::services::weather::WeatherService;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{Datelike, Local};
@@ -44,23 +45,23 @@ impl App {
         self.reset_chat_scroll();
         self.add_user_message_to_history(&user_message);
 
-        if let Some(reply) = try_handle_weather_question(&user_message)? {
-            self.add_assistant_message(&reply);
-            return Ok(());
-        }
-
-        if let Some(reply) = try_handle_time_question(&user_message) {
-            self.add_assistant_message(&reply);
-            return Ok(());
-        }
-
-        if let Some(reply) = try_handle_date_question(&user_message) {
-            self.add_assistant_message(&reply);
+        if let Some(action) = select_fast_path_action(&user_message)? {
+            self.add_assistant_message(&action.into_reply());
             return Ok(());
         }
 
         self.is_loading = true;
-        self.is_searching = self.should_mark_searching(&user_message);
+        let intent = classify_query(&user_message);
+        let search_request = SearchStateRequest {
+            query: &user_message,
+            intent,
+        };
+        self.is_searching = self.should_mark_searching(search_request);
+        self.is_fetching_notes = crate::app::chat::agent::obsidian::should_fetch_obsidian_for_intent(
+            &self.connect_obsidian_vault,
+            &user_message,
+            intent,
+        );
         self.is_analyzing = !self.chat_attachments.is_empty();
 
         let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
@@ -189,11 +190,14 @@ impl App {
         Ok(false)
     }
 
-    fn should_mark_searching(&self, query: &str) -> bool {
+    fn should_mark_searching(&self, request: SearchStateRequest<'_>) -> bool {
         if self.connect_brave_key.trim().is_empty() {
             return false;
         }
-        super::agent::should_use_brave_search(query)
+        crate::app::chat::agent::search::should_mark_searching_for_intent(
+            request.query,
+            request.intent,
+        )
     }
 
     fn cleaned_chat_input_with_attachments(&mut self) -> String {
@@ -445,6 +449,41 @@ fn try_handle_date_question(input: &str) -> Option<String> {
         ));
     }
     None
+}
+
+#[derive(Debug, Clone)]
+enum FastPathAction {
+    Weather(String),
+    Time(String),
+    Date(String),
+}
+
+impl FastPathAction {
+    fn into_reply(self) -> String {
+        match self {
+            FastPathAction::Weather(reply) => reply,
+            FastPathAction::Time(reply) => reply,
+            FastPathAction::Date(reply) => reply,
+        }
+    }
+}
+
+fn select_fast_path_action(input: &str) -> Result<Option<FastPathAction>> {
+    if let Some(reply) = try_handle_weather_question(input)? {
+        return Ok(Some(FastPathAction::Weather(reply)));
+    }
+    if let Some(reply) = try_handle_time_question(input) {
+        return Ok(Some(FastPathAction::Time(reply)));
+    }
+    if let Some(reply) = try_handle_date_question(input) {
+        return Ok(Some(FastPathAction::Date(reply)));
+    }
+    Ok(None)
+}
+
+struct SearchStateRequest<'a> {
+    query: &'a str,
+    intent: crate::app::chat::agent::intent::QueryIntent,
 }
 
 #[derive(Debug, Deserialize)]

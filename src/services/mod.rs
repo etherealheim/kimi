@@ -4,9 +4,7 @@ pub mod clipboard;
 pub mod personality;
 pub mod memories;
 pub mod obsidian;
-pub mod venice;
-pub mod gab_ai;
-pub mod brave;
+#[path = "link-download.rs"]
 pub mod link_download;
 pub mod convert;
 pub mod dates;

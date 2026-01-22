@@ -1,9 +1,10 @@
 mod context;
-mod obsidian;
-mod search;
+pub(crate) mod intent;
+mod json;
+pub(crate) mod obsidian;
+pub(crate) mod search;
 mod verification;
 
-pub(crate) use self::search::should_use_brave_search;
 
 use crate::agents::ChatMessage as AgentChatMessage;
 use crate::app::types::{ChatMessage, MessageRole};
@@ -16,19 +17,39 @@ use crate::app::chat::agent::context::{
     build_memory_context,
     tokenize_query,
 };
+use crate::app::chat::agent::intent::{classify_query_with_model, IntentModelContext, QueryIntent};
 use chrono::Local;
 use color_eyre::Result;
 
 impl App {
+    fn is_gab_model_name(&self, model_name: &str) -> bool {
+        model_name.trim().eq_ignore_ascii_case("arya")
+    }
+
     fn model_source_for(
         &self,
         agent_name: &str,
         model_name: &str,
     ) -> Option<crate::app::ModelSource> {
-        self.available_models
+        let source = self
+            .available_models
             .get(agent_name)
-            .and_then(|models| models.iter().find(|model| model.name == model_name))
-            .map(|model| model.source.clone())
+            .and_then(|models| {
+                models
+                    .iter()
+                    .find(|model| model_name_matches_case_insensitive(&model.name, model_name))
+            })
+            .map(|model| model.source.clone());
+        if source.is_some() {
+            return source;
+        }
+        if agent_name == "chat"
+            && self.is_gab_model_name(model_name)
+            && !self.connect_gab_key.trim().is_empty()
+        {
+            return Some(crate::app::ModelSource::GabAI);
+        }
+        None
     }
 
     pub fn is_agent_command(&self, command: &str) -> bool {
@@ -64,7 +85,17 @@ impl App {
         } else if let Some(is_enabled) = self.personality_enabled_by_agent.get(agent_name).copied()
         {
             self.personality_enabled = is_enabled;
-            if !self.personality_enabled {
+            if self.personality_enabled {
+                let selected_name = self
+                    .personality_name
+                    .clone()
+                    .unwrap_or_else(crate::services::personality::default_personality_name);
+                if let Ok(text) = crate::services::personality::read_personality(&selected_name) {
+                    if !text.trim().is_empty() {
+                        self.personality_text = Some(text);
+                    }
+                }
+            } else {
                 self.personality_text = None;
             }
         }
@@ -74,10 +105,20 @@ impl App {
             .get(agent_name)
             .and_then(|models| models.first())
             .cloned();
-        let selected_source = selected_model
+        let mut selected_source = selected_model
             .as_ref()
             .and_then(|model_name| self.model_source_for(agent_name, model_name))
             .unwrap_or(crate::app::ModelSource::Ollama);
+        if agent_name == "chat"
+            && selected_source == crate::app::ModelSource::Ollama
+            && selected_model
+                .as_ref()
+                .map(|model_name| self.is_gab_model_name(model_name))
+                .unwrap_or(false)
+            && !self.connect_gab_key.trim().is_empty()
+        {
+            selected_source = crate::app::ModelSource::GabAI;
+        }
 
         let manager = self
             .agent_manager
@@ -194,6 +235,90 @@ impl App {
 
 }
 
+fn enrich_query_with_context(query: &str, history: &[ChatMessage]) -> String {
+    if !is_follow_up_query(query) {
+        return query.to_string();
+    }
+    let previous_user_messages: Vec<&str> = history
+        .iter()
+        .rev()
+        .filter(|msg| msg.role == MessageRole::User)
+        .take(2)
+        .map(|msg| msg.content.as_str())
+        .collect();
+    let Some(previous_query) = previous_user_messages.get(1) else {
+        return query.to_string();
+    };
+    let previous_tokens = extract_meaningful_tokens(previous_query);
+    if previous_tokens.is_empty() {
+        return query.to_string();
+    }
+    format!("{} {}", query, previous_tokens.join(" "))
+}
+
+fn is_follow_up_query(query: &str) -> bool {
+    let lowered = query.to_lowercase();
+    let word_count = query.split_whitespace().count();
+    if word_count > 12 {
+        return false;
+    }
+    let pronouns = [" it", " that", " them", " those", " this", " these"];
+    pronouns.iter().any(|pronoun| lowered.contains(pronoun))
+}
+
+fn query_wants_full_note_display(query: &str) -> bool {
+    let lowered = query.to_lowercase();
+    let full_display_terms = [
+        "bring it",
+        "bring that",
+        "show it",
+        "show that",
+        "display it",
+        "display that",
+        "give it",
+        "give that",
+        "the whole note",
+        "full note",
+        "entire note",
+        "everything",
+        "all of it",
+        "show me everything",
+        "show me all",
+        "give me everything",
+        "paste it",
+        "paste that",
+        "copy it",
+        "copy that",
+    ];
+    full_display_terms
+        .iter()
+        .any(|term| lowered.contains(term))
+}
+
+fn extract_meaningful_tokens(text: &str) -> Vec<String> {
+    let stop_words = [
+        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+        "of", "with", "by", "from", "up", "about", "into", "through", "during",
+        "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+        "do", "does", "did", "can", "could", "will", "would", "should", "may",
+        "might", "must", "i", "you", "he", "she", "it", "we", "they", "my",
+        "your", "his", "her", "its", "our", "their", "what", "when", "where",
+        "why", "how", "which", "who", "whom", "notes", "note", "obsidian",
+    ];
+    text.split_whitespace()
+        .filter_map(|word| {
+            let cleaned = word
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase();
+            if cleaned.len() < 3 || stop_words.contains(&cleaned.as_str()) {
+                None
+            } else {
+                Some(cleaned)
+            }
+        })
+        .collect()
+}
+
 pub(crate) struct ChatBuildSnapshot {
     pub system_prompt: String,
     pub chat_history: Vec<ChatMessage>,
@@ -271,10 +396,17 @@ pub(crate) fn build_agent_messages_from_snapshot(
         history_used: 0,
         memories_used: 0,
     };
-    let mut query_tokens: Vec<String> = Vec::new();
+    let mut query_intent: Option<QueryIntent> = None;
     let storage = crate::storage::StorageManager::new().ok();
+    let routing_agent = manager.get_agent("routing").cloned();
     if let Some(query) = last_user_message.clone() {
-        query_tokens = tokenize_query(&query);
+        let query_tokens = tokenize_query(&query);
+        let intent_context = IntentModelContext {
+            manager,
+            routing_agent: routing_agent.as_ref(),
+            fallback_agent: agent,
+        };
+        query_intent = Some(classify_query_with_model(&query, intent_context));
         if let Ok(summary_entries) = build_conversation_summary_entries(storage.as_ref(), &query) {
             if !summary_entries.is_empty() {
                 context_usage.history_used =
@@ -305,21 +437,29 @@ pub(crate) fn build_agent_messages_from_snapshot(
             }
         }
     }
-    if let Some(query) = last_user_message.clone() {
-        if let Ok(Some(obsidian_context)) = obsidian::build_obsidian_context(
-            &snapshot.connect_obsidian_vault,
-            &query,
-            &query_tokens,
-        ) {
+    if let (Some(query), Some(intent)) = (last_user_message.clone(), query_intent) {
+        let enriched_query = enrich_query_with_context(&query, &snapshot.chat_history);
+        let request = obsidian::ObsidianContextRequest {
+            vault_path: &snapshot.connect_obsidian_vault,
+            query: &enriched_query,
+            intent,
+        };
+        if let Ok(Some(obsidian_context)) = obsidian::build_obsidian_context(request) {
             context_usage.notes_used = obsidian_context.count;
-            prompt_lines.push(
-                "Use the Obsidian notes below to answer questions about the user's notes."
-                    .to_string(),
-            );
-            prompt_lines.push(
-                "Do not add or infer information that is not explicitly present in the notes."
-                    .to_string(),
-            );
+            let wants_full_display = query_wants_full_note_display(&enriched_query);
+            if wants_full_display {
+                prompt_lines.push("--- Full Note Content ---".to_string());
+                prompt_lines.push(
+                    "Share the note content below with the user. Include relevant details."
+                        .to_string(),
+                );
+            } else {
+                prompt_lines.push("--- Obsidian Notes ---".to_string());
+                prompt_lines.push(
+                    "Reference information from the notes below when answering about the user's notes."
+                        .to_string(),
+                );
+            }
             prompt_lines.push(obsidian_context.content);
         }
     }
@@ -328,22 +468,19 @@ pub(crate) fn build_agent_messages_from_snapshot(
         || context_usage.memories_used > 0;
 
     let mut pending_search_notice: Option<String> = None;
-    if let Some(query) = last_user_message.clone() {
-        let search_context = search::SearchContext::new(
-            agent.clone(),
-            manager.clone(),
-            snapshot.connect_brave_key.clone(),
-        );
+    if let (Some(query), Some(intent)) = (last_user_message.clone(), query_intent) {
+        let search_context = search::SearchContext::new(snapshot.connect_brave_key.clone());
         pending_search_notice = search::enrich_prompt_with_search_snapshot(
             &search_context,
             &mut prompt_lines,
-            &query,
+            search::SearchSnapshotRequest { query: &query, intent },
         );
     }
 
     let has_search_context = prompt_lines
         .iter()
         .any(|line| line.starts_with("Brave search results for"));
+    
     if snapshot.personality_enabled {
         if let Some(text) = &personality_text {
             if !text.trim().is_empty() {
@@ -351,6 +488,7 @@ pub(crate) fn build_agent_messages_from_snapshot(
             }
         }
     }
+    
     let merged_prompt = prompt_lines.join("\n\n");
     let system_context = merged_prompt.clone();
     let mut messages = vec![AgentChatMessage::system(merged_prompt)];
@@ -456,4 +594,8 @@ fn extract_context_keywords(content: &str) -> Vec<String> {
     keywords.sort();
     keywords.dedup();
     keywords
+}
+
+fn model_name_matches_case_insensitive(left: &str, right: &str) -> bool {
+    left.trim().eq_ignore_ascii_case(right.trim())
 }

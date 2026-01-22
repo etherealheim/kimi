@@ -1,5 +1,11 @@
 use crate::app::types::MenuItem;
 use crate::app::{App, AppMode, Navigable};
+use color_eyre::Result;
+
+/// Command implementations
+pub fn cmd_quit() -> Result<String> {
+    Ok("Goodbye!".to_string())
+}
 
 impl App {
     pub fn open_command_menu(&mut self) {

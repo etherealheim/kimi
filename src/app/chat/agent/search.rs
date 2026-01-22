@@ -1,98 +1,38 @@
-use crate::app::chat::agent::context::{is_personal_recap_query, is_week_note_query};
-use crate::app::chat::agent::obsidian::is_external_event_query;
-use crate::agents::{Agent, AgentManager};
-use serde::Deserialize;
-
-const SEARCH_DECISION_SYSTEM_PROMPT: &str = r#"You are a search routing assistant.
-Decide whether a user's request needs live web search or can be answered directly.
-
-Return ONLY valid JSON in this exact schema:
-{"action":"search|direct|clarify","query":"<search query if action=search>"}
-
-Rules:
-- Use "search" for proper nouns, company names, products, recent info, or if uncertain.
-- Use "clarify" if the request is ambiguous and needs a question first.
-- Use "direct" if it is general knowledge and timeless.
-- When action is "search", craft a concise query (2-6 words).
-"#;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum SearchDecisionAction {
-    Search,
-    Direct,
-    Clarify,
-}
-
-#[derive(Debug, Clone)]
-struct SearchDecision {
-    action: SearchDecisionAction,
-    query: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SearchDecisionPayload {
-    action: String,
-    query: Option<String>,
-}
+use crate::app::chat::agent::intent::QueryIntent;
 
 pub struct SearchContext {
-    agent: Agent,
-    manager: AgentManager,
     brave_key: String,
 }
 
+pub struct SearchSnapshotRequest<'a> {
+    pub query: &'a str,
+    pub intent: QueryIntent,
+}
+
+#[derive(Debug, Clone)]
+enum SearchAction {
+    BraveSearch { query: String },
+}
+
 impl SearchContext {
-    pub fn new(agent: Agent, manager: AgentManager, brave_key: String) -> Self {
-        Self {
-            agent,
-            manager,
-            brave_key,
-        }
+    pub fn new(brave_key: String) -> Self {
+        Self { brave_key }
     }
 }
 
 pub fn enrich_prompt_with_search_snapshot(
     context: &SearchContext,
     prompt_lines: &mut Vec<String>,
-    query: &str,
+    request: SearchSnapshotRequest<'_>,
 ) -> Option<String> {
-    let lowered = query.to_lowercase();
-    // Week note queries should never trigger web search
-    if is_personal_recap_query(&lowered) || is_week_note_query(&lowered) {
+    let Some(action) = select_search_action(request) else {
         return None;
-    }
-    // Explicit note queries should rely on Obsidian, not web search
-    if is_note_lookup_query(&lowered) {
-        return None;
-    }
-    if is_external_event_query(&lowered) {
-        return append_brave_search_results_snapshot(context, prompt_lines, query);
-    }
-    let decision = decide_search_decision_snapshot(context, query);
-    let action = decision.as_ref().map(|value| value.action);
-    if action == Some(SearchDecisionAction::Clarify) {
-        prompt_lines.push("Ask a brief clarifying question before answering.".to_string());
-        return None;
-    }
-    let should_search = match action {
-        Some(SearchDecisionAction::Search) => true,
-        Some(SearchDecisionAction::Direct) | Some(SearchDecisionAction::Clarify) => false,
-        None => should_use_brave_search(query),
     };
-    if !should_search {
-        return None;
+    match action {
+        SearchAction::BraveSearch { query } => {
+            append_brave_search_results_snapshot(context, prompt_lines, &query)
+        }
     }
-    let search_query = select_search_query(decision.as_ref(), query);
-    append_brave_search_results_snapshot(context, prompt_lines, &search_query)
-}
-
-fn decide_search_decision_snapshot(
-    context: &SearchContext,
-    query: &str,
-) -> Option<SearchDecision> {
-    let messages = build_search_decision_messages(query);
-    let response = context.manager.chat(&context.agent, &messages).ok()?;
-    parse_search_decision(&response)
 }
 
 fn append_brave_search_results_snapshot(
@@ -106,7 +46,7 @@ fn append_brave_search_results_snapshot(
                 .to_string(),
         );
     }
-    match crate::services::brave::search(&context.brave_key, query) {
+    match crate::agents::brave::search(&context.brave_key, query) {
         Ok(results) => {
             if results.is_empty() {
                 return Some("I couldn't find any live search results for that.".to_string());
@@ -132,47 +72,6 @@ fn append_brave_search_results_snapshot(
     }
 }
 
-fn build_search_decision_messages(query: &str) -> Vec<crate::agents::ChatMessage> {
-    vec![
-        crate::agents::ChatMessage::system(SEARCH_DECISION_SYSTEM_PROMPT),
-        crate::agents::ChatMessage::user(query),
-    ]
-}
-
-fn parse_search_decision(response: &str) -> Option<SearchDecision> {
-    let json = extract_json_object(response)?;
-    let payload: SearchDecisionPayload = serde_json::from_str(&json).ok()?;
-    let action = parse_search_decision_action(payload.action.trim())?;
-    let query = payload.query.map(|value| value.trim().to_string());
-    Some(SearchDecision { action, query })
-}
-
-fn parse_search_decision_action(value: &str) -> Option<SearchDecisionAction> {
-    match value {
-        "search" => Some(SearchDecisionAction::Search),
-        "direct" => Some(SearchDecisionAction::Direct),
-        "clarify" => Some(SearchDecisionAction::Clarify),
-        _ => None,
-    }
-}
-
-fn extract_json_object(value: &str) -> Option<String> {
-    let start = value.find('{')?;
-    let end = value.rfind('}')?;
-    if end <= start {
-        return None;
-    }
-    Some(value[start..=end].to_string())
-}
-
-fn select_search_query(decision: Option<&SearchDecision>, fallback: &str) -> String {
-    decision
-        .and_then(|value| value.query.as_ref())
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| fallback.to_string())
-}
 
 pub(crate) fn should_use_brave_search(query: &str) -> bool {
     let trimmed = query.trim();
@@ -223,6 +122,27 @@ pub(crate) fn should_use_brave_search(query: &str) -> bool {
     looks_like_question && has_location
 }
 
+fn select_search_action(request: SearchSnapshotRequest<'_>) -> Option<SearchAction> {
+    if request.intent.is_personal_recap
+        || request.intent.is_week_note
+        || request.intent.is_note_lookup
+        || request.intent.is_note_creation
+    {
+        return None;
+    }
+    if request.intent.is_external_event || should_use_brave_search(request.query) {
+        return Some(SearchAction::BraveSearch {
+            query: request.query.to_string(),
+        });
+    }
+    None
+}
+
+pub fn should_mark_searching_for_intent(query: &str, intent: QueryIntent) -> bool {
+    let request = SearchSnapshotRequest { query, intent };
+    select_search_action(request).is_some()
+}
+
 fn looks_like_entity_query(query: &str) -> bool {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -253,17 +173,3 @@ fn looks_like_weather_question(lowered: &str) -> bool {
     weather_terms.iter().any(|term| lowered.contains(term))
 }
 
-fn is_note_lookup_query(lowered: &str) -> bool {
-    let note_indicators = [
-        "in my notes",
-        "from my notes",
-        "in notes",
-        "my notes about",
-        "notes about",
-        "wrote in my notes",
-        "have in my notes",
-        "in my obsidian",
-        "from obsidian",
-    ];
-    note_indicators.iter().any(|term| lowered.contains(term))
-}

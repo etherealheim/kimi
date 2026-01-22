@@ -5,6 +5,12 @@
 - **TUI**: ratatui + crossterm
 - **Error Handling**: color-eyre
 
+## Git Policy
+**IMPORTANT**: Never perform git operations (add, commit, push) unless the user explicitly requests it.
+- Only use git commands when user says "push", "commit", "git push", etc.
+- After implementing features, wait for user confirmation before committing
+- Do not automatically version bump or push changes
+
 ## Clean Code Principles (The Rules We Follow)
 
 ### 1. Function Arguments (0-2 ideal, 3+ = group into struct)
@@ -158,6 +164,7 @@ match mode {
 - `PascalCase`: types, structs, enums
 - `SCREAMING_SNAKE_CASE`: constants
 - Booleans: `is_`, `has_`, `should_` prefix
+- File naming: use `-` between words (e.g., `text-input.rs`), not `_`
 
 ### Documentation
 - Public APIs: `///` doc comments
@@ -174,6 +181,10 @@ cargo test            # Run tests
 cargo build           # Verify build
 ```
 Also bump `Cargo.toml` version before pushing changes so the header version stays current.
+
+### Build Testing (Always)
+- Run `cargo build` after any non-trivial change to expose issues early.
+- If build fails, fix errors before proceeding.
 
 ### Quality Checklist
 - ✓ No functions with 3+ parameters (without grouping)

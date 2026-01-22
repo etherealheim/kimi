@@ -1,4 +1,8 @@
+pub mod brave;
+#[path = "gab-ai.rs"]
+pub mod gab_ai;
 pub mod ollama;
+pub mod venice;
 
 use crate::config::Config;
 use crate::app::ModelSource;
@@ -120,14 +124,14 @@ impl AgentManager {
                     .venice_api_key
                     .as_ref()
                     .ok_or_else(|| color_eyre::eyre::eyre!("Venice API key not configured"))?;
-                crate::services::venice::chat(api_key, &agent.model, messages)
+                crate::agents::venice::chat(api_key, &agent.model, messages)
             }
             ModelSource::GabAI => {
                 let api_key = self
                     .gab_api_key
                     .as_ref()
                     .ok_or_else(|| color_eyre::eyre::eyre!("Gab AI key not configured"))?;
-                crate::services::gab_ai::chat(api_key, &self.gab_base_url, &agent.model, messages)
+                crate::agents::gab_ai::chat(api_key, &self.gab_base_url, &agent.model, messages)
             }
         }
     }
