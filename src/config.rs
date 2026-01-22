@@ -19,6 +19,8 @@ pub struct Config {
     #[serde(default)]
     pub obsidian: ObsidianConfig,
     #[serde(default)]
+    pub embeddings: EmbeddingsConfig,
+    #[serde(default)]
     pub personality: PersonalityConfig,
     pub agents: HashMap<String, AgentConfig>,
 }
@@ -84,6 +86,26 @@ pub struct BraveConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ObsidianConfig {
     pub vault_path: String,
+}
+
+/// Embeddings configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingsConfig {
+    pub model: String,
+    pub ollama_url: String,
+    pub similarity_threshold: f32,
+    pub max_retrieved_messages: usize,
+}
+
+impl Default for EmbeddingsConfig {
+    fn default() -> Self {
+        Self {
+            model: "mxbai-embed-large".to_string(),
+            ollama_url: "http://localhost:11434".to_string(),
+            similarity_threshold: 0.3,
+            max_retrieved_messages: 5,
+        }
+    }
 }
 
 /// Personality configuration
@@ -156,6 +178,7 @@ impl Default for Config {
             obsidian: ObsidianConfig {
                 vault_path: String::new(),
             },
+            embeddings: EmbeddingsConfig::default(),
             personality: PersonalityConfig {
                 selected: "Casca".to_string(),
             },
@@ -230,40 +253,35 @@ impl Config {
     }
 
     fn apply_local_overrides(config: &mut Self, local: &LocalConfig) {
-        if let Some(elevenlabs) = &local.elevenlabs {
-            if let Some(api_key) = &elevenlabs.api_key {
-                if !api_key.trim().is_empty() {
-                    config.elevenlabs.api_key = api_key.clone();
-                }
-            }
+        if let Some(elevenlabs) = &local.elevenlabs
+            && let Some(api_key) = &elevenlabs.api_key
+            && !api_key.trim().is_empty()
+        {
+            config.elevenlabs.api_key = api_key.clone();
         }
-        if let Some(venice) = &local.venice {
-            if let Some(api_key) = &venice.api_key {
-                if !api_key.trim().is_empty() {
-                    config.venice.api_key = api_key.clone();
-                }
-            }
+        if let Some(venice) = &local.venice
+            && let Some(api_key) = &venice.api_key
+            && !api_key.trim().is_empty()
+        {
+            config.venice.api_key = api_key.clone();
         }
-        if let Some(brave) = &local.brave {
-            if let Some(api_key) = &brave.api_key {
-                if !api_key.trim().is_empty() {
-                    config.brave.api_key = api_key.clone();
-                }
-            }
+        if let Some(brave) = &local.brave
+            && let Some(api_key) = &brave.api_key
+            && !api_key.trim().is_empty()
+        {
+            config.brave.api_key = api_key.clone();
         }
-        if let Some(gab) = &local.gab {
-            if let Some(api_key) = &gab.api_key {
-                if !api_key.trim().is_empty() {
-                    config.gab.api_key = api_key.clone();
-                }
-            }
+        if let Some(gab) = &local.gab
+            && let Some(api_key) = &gab.api_key
+            && !api_key.trim().is_empty()
+        {
+            config.gab.api_key = api_key.clone();
         }
-        if let Some(obsidian) = &local.obsidian {
-            if let Some(vault_path) = &obsidian.vault_path {
-                if !vault_path.trim().is_empty() {
-                    config.obsidian.vault_path = vault_path.clone();
-                }
-            }
+        if let Some(obsidian) = &local.obsidian
+            && let Some(vault_path) = &obsidian.vault_path
+            && !vault_path.trim().is_empty()
+        {
+            config.obsidian.vault_path = vault_path.clone();
         }
     }
 

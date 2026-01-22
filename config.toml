@@ -19,8 +19,18 @@ api_key = ""
 [obsidian]
 vault_path = "/home/ethereal/Documents/e-vault/"
 
+[embeddings]
+model = "mxbai-embed-large"
+ollama_url = "http://localhost:11434"
+similarity_threshold = 0.3
+max_retrieved_messages = 5
+
 [personality]
 selected = "Casca"
+
+[agents.chat]
+model = "gemma3:12b"
+system_prompt = "Kimi base prompt is loaded from data/personalities/Kimi.md."
 
 [agents.routing]
 model = "functiongemma:latest"
@@ -29,7 +39,3 @@ system_prompt = "Function calling router."
 [agents.translate]
 model = "translategemma:latest"
 system_prompt = "You are a translation assistant. Translate text between languages clearly and accurately."
-
-[agents.chat]
-model = "venice-uncensored"
-system_prompt = "Kimi base prompt is loaded from data/personalities/Kimi.md."

@@ -25,9 +25,7 @@ pub fn enrich_prompt_with_search_snapshot(
     prompt_lines: &mut Vec<String>,
     request: SearchSnapshotRequest<'_>,
 ) -> Option<String> {
-    let Some(action) = select_search_action(request) else {
-        return None;
-    };
+    let action = select_search_action(request)?;
     match action {
         SearchAction::BraveSearch { query } => {
             append_brave_search_results_snapshot(context, prompt_lines, &query)

@@ -121,7 +121,7 @@ fn render_history_list(f: &mut Frame, app: &App, area: Rect) {
                     conv.created_at.clone()
                 };
 
-            let is_generating = conv.summary.as_deref() == Some(PENDING_SUMMARY_LABEL);
+            let is_generating = is_pending_summary(app, conv);
             let summary_text = if is_generating {
                 "Generating summary...".to_string()
             } else {
@@ -160,9 +160,10 @@ fn render_history_list(f: &mut Frame, app: &App, area: Rect) {
             let max_summary_width = area.width.saturating_sub(6) as usize;
             let summary_lines = wrap_summary_text(&summary_text, max_summary_width, 3);
 
+            let first_summary_line = summary_lines.first().cloned().unwrap_or_default();
             let summary_line = Line::from(vec![
                 Span::styled(prefix, prefix_style),
-                Span::styled(summary_lines[0].clone(), summary_style),
+                Span::styled(first_summary_line, summary_style),
             ]);
 
             // Second line: metadata (date, agent, message count)
@@ -222,13 +223,30 @@ fn render_history_list(f: &mut Frame, app: &App, area: Rect) {
 
     // Calculate the position to render based on selected index
     let mut list_state = ListState::default();
-    if selectable_item_count > 0 {
-        if let Some(item_index) = selected_item_index {
-            list_state.select(Some(item_index));
-        }
+    if selectable_item_count > 0
+        && let Some(item_index) = selected_item_index
+    {
+        list_state.select(Some(item_index));
     }
 
     f.render_stateful_widget(list, area, &mut list_state);
+}
+
+fn is_pending_summary(app: &App, conv: &crate::storage::ConversationSummary) -> bool {
+    if conv.summary.as_deref() != Some(PENDING_SUMMARY_LABEL) {
+        return false;
+    }
+    if !app.is_generating_summary {
+        return false;
+    }
+    let Some(current_id) = app.current_conversation_id.as_deref() else {
+        return false;
+    };
+    normalize_conversation_id(&conv.id) == normalize_conversation_id(current_id)
+}
+
+fn normalize_conversation_id(value: &str) -> &str {
+    value.strip_prefix("conversation:").unwrap_or(value)
 }
 
 fn wrap_summary_text(text: &str, max_width: usize, max_lines: usize) -> Vec<String> {

@@ -11,6 +11,29 @@
 - After implementing features, wait for user confirmation before committing
 - Do not automatically version bump or push changes
 
+## Problem-Solving Philosophy
+**CRITICAL**: When debugging or implementing complex features, EXPLAIN THE PROBLEM FIRST before jumping to solutions.
+
+**Why**: The user often has brilliant ideas for solutions, but needs to understand what's actually happening under the hood.
+
+**How**:
+1. **Diagnose**: Clearly explain what's happening (e.g., "The LLM is getting both the personality prompt AND raw context, causing confusion about priorities")
+2. **Ask**: "What do you think would work?" or present the architecture challenge
+3. **Collaborate**: The user might suggest simple, elegant solutions you didn't consider
+4. **Implement**: Then write the code based on their approach
+
+**Example**:
+- ❌ Bad: "Let me try adding more instructions to the prompt" (just guessing)
+- ✅ Good: "The LLM is seeing: 1) Strong personality prompt ('be teasing, ask questions'), 2) Facts to present, 3) Gets confused about priorities. What if we separate the tasks?"
+- User: "Oh! Run two separate LLM calls - one for facts, one for style!"
+- ✅ Result: Working solution the user helped design
+
+This approach:
+- Leverages the user's domain knowledge
+- Builds shared understanding
+- Results in better solutions
+- Saves debugging time
+
 ## Clean Code Principles (The Rules We Follow)
 
 ### 1. Function Arguments (0-2 ideal, 3+ = group into struct)
@@ -183,7 +206,7 @@ cargo build           # Verify build
 Also bump `Cargo.toml` version before pushing changes so the header version stays current.
 
 ### Build Testing (Always)
-- Run `cargo build` after any non-trivial change to expose issues early.
+- Run `cargo build` and cargo clippy after any non-trivial change to expose issues early.
 - If build fails, fix errors before proceeding.
 
 ### Quality Checklist

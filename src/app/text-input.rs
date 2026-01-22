@@ -112,8 +112,7 @@ fn char_to_byte_index(value: &str, char_index: usize) -> usize {
     value
         .char_indices()
         .nth(char_index)
-        .map(|(index, _)| index)
-        .unwrap_or_else(|| value.len())
+        .map_or_else(|| value.len(), |(index, _)| index)
 }
 
 impl Default for TextInput {

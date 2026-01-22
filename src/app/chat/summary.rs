@@ -48,7 +48,9 @@ impl App {
         if words.len() <= max_words {
             return summary.to_string();
         }
-        words[..max_words].join(" ")
+        words
+            .get(..max_words)
+            .map_or_else(|| summary.to_string(), |slice| slice.join(" "))
     }
 
     /// Builds conversation context from recent messages for summary generation
@@ -86,27 +88,38 @@ impl App {
     }
 
     fn save_pending_conversation(&mut self, messages: &[ConversationMessage]) -> Result<()> {
+        if !self.ensure_storage() {
+            return Err(color_eyre::eyre::eyre!("Storage not initialized"));
+        }
         let Some(storage) = &self.storage else {
-            return Ok(());
+            return Err(color_eyre::eyre::eyre!("Storage not initialized"));
         };
         let agent_name = self
             .current_agent
             .as_ref()
             .map_or("unknown", |agent| agent.name.as_str());
-        if let Some(conversation_id) = self.current_conversation_id {
-            storage.update_conversation(
-                conversation_id,
-                PENDING_SUMMARY_LABEL,
-                PENDING_SUMMARY_LABEL,
-                messages,
-            )?;
+        
+        let runtime = self
+            .storage_runtime()
+            .ok_or_else(|| color_eyre::eyre::eyre!("Storage runtime not initialized"))?;
+        if let Some(conversation_id) = &self.current_conversation_id {
+            let conv_id_clone = conversation_id.clone();
+            runtime.block_on(async {
+                storage.update_conversation(
+                    &conv_id_clone,
+                    PENDING_SUMMARY_LABEL,
+                    PENDING_SUMMARY_LABEL,
+                    messages,
+                ).await
+            })?;
         } else {
             let data = crate::storage::ConversationData::new(agent_name, messages)
                 .with_summary(PENDING_SUMMARY_LABEL)
                 .with_detailed_summary(PENDING_SUMMARY_LABEL);
-            if let Ok(conversation_id) = storage.save_conversation(data) {
-                self.current_conversation_id = Some(conversation_id);
-            }
+            let conversation_id = runtime.block_on(async {
+                storage.save_conversation(data).await
+            })?;
+            self.current_conversation_id = Some(conversation_id);
         }
         Ok(())
     }
@@ -146,125 +159,6 @@ Conversation: {}",
         });
     }
 
-    /// Spawns a background thread to extract persistent memories
-    fn spawn_memory_extraction_thread(
-        agent: crate::agents::Agent,
-        manager: crate::agents::AgentManager,
-        context: String,
-        agent_tx: std::sync::mpsc::Sender<AgentEvent>,
-    ) {
-        let extraction_prompt = format!(
-            "Extract persistent user memories from this conversation.\n\
-Prefer specific entities over generic categories. If a title or proper noun is mentioned, include it.\n\
-Examples: use \"finished Elden Ring\" instead of \"finishing games\".\n\
-IMPORTANT: If you find the same item with multiple contexts, combine them into ONE line with comma-separated tags.\n\
-Example: <Arch Linux | tags=os,linux,system | source=explicit | confidence=high>\n\
-Return only blocks in the exact format below and nothing else.\n\
-Use empty output if nothing is relevant.\n\
-[context:likes]\n\
-<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
-[context:dislikes]\n\
-<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
-[context:location]\n\
-<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
-[context:timezone]\n\
-<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
-[context:tools]\n\
-<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
-[context:projects]\n\
-<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
-[context:topics]\n\
-<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\n\
-Conversation: {}",
-            context.chars().take(600).collect::<String>()
-        );
-
-        std::thread::spawn(move || {
-            let messages = vec![
-                AgentChatMessage::system(
-                    "You extract structured user memory. Follow the format exactly.",
-                ),
-                AgentChatMessage::user(&extraction_prompt),
-            ];
-            let response = manager.chat(&agent, &messages).unwrap_or_default();
-            let _ = agent_tx.send(AgentEvent::MemoryExtracted(response));
-        });
-    }
-
-    pub(crate) fn queue_realtime_memory_extraction(
-        &self,
-        assistant_response: &str,
-    ) -> Result<()> {
-        let Some(context) = self.build_realtime_memory_context(assistant_response) else {
-            return Ok(());
-        };
-        let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
-        let job = MemoryExtractionJob {
-            agent,
-            manager,
-            context,
-            agent_tx,
-        };
-        Self::spawn_realtime_memory_extraction_thread(job);
-        Ok(())
-    }
-
-    fn build_realtime_memory_context(&self, assistant_response: &str) -> Option<String> {
-        let user_message = self.last_user_message_content()?;
-        let trimmed_user = user_message.trim();
-        if trimmed_user.is_empty() {
-            return None;
-        }
-        let trimmed_assistant = assistant_response.trim();
-        let context = format!(
-            "User: {}\nAssistant: {}",
-            trimmed_user,
-            trimmed_assistant
-        );
-        Some(context)
-    }
-
-    fn spawn_realtime_memory_extraction_thread(job: MemoryExtractionJob) {
-        let extraction_prompt = format!(
-            "Decide if the user's latest message contains durable personal facts worth saving.\n\
-Only capture stable, user-specific details (preferences, tools, projects, topics, location, timezone).\n\
-Prefer specific entities over generic categories. If a title or proper noun is mentioned, include it.\n\
-Examples: use \"finished Elden Ring\" instead of \"finishing games\".\n\
-IMPORTANT: Use comma-separated tags to capture different contexts. Example: <Arch Linux | tags=os,linux,system>\n\
-If nothing is worth saving, return empty output.\n\
-Return only blocks in the exact format below and nothing else.\n\
-[context:likes]\n\
-<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
-[context:dislikes]\n\
-<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
-[context:location]\n\
-<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
-[context:timezone]\n\
-<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
-[context:tools]\n\
-<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
-[context:projects]\n\
-<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\
-[context:topics]\n\
-<value | tags=tag1,tag2 | source=explicit | confidence=high>\n\n\
-Conversation: {}",
-            job.context.chars().take(400).collect::<String>()
-        );
-
-        std::thread::spawn(move || {
-            let messages = vec![
-                AgentChatMessage::system(
-                    "You extract structured user memory. Follow the format exactly.",
-                ),
-                AgentChatMessage::user(&extraction_prompt),
-            ];
-            let response = job.manager.chat(&job.agent, &messages).unwrap_or_default();
-            let _ = job
-                .agent_tx
-                .send(AgentEvent::MemoryExtracted(response));
-        });
-    }
-
     pub fn exit_chat_to_history(&mut self) -> Result<()> {
         if self.chat_history.is_empty() {
             self.open_history();
@@ -276,25 +170,19 @@ Conversation: {}",
 
         let context = self.build_summary_context();
         let messages = self.build_conversation_messages();
-        let _ = self.save_pending_conversation(&messages);
+        if let Err(error) = self.save_pending_conversation(&messages) {
+            self.show_status_toast(format!("HISTORY SAVE FAILED: {}", error));
+        }
         let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
 
         Self::spawn_summary_generation_thread(
-            agent.clone(),
-            manager.clone(),
-            context.clone(),
-            agent_tx.clone(),
+            agent,
+            manager,
+            context,
+            agent_tx,
         );
-        Self::spawn_memory_extraction_thread(agent, manager, context, agent_tx);
 
         self.open_history();
         Ok(())
     }
-}
-
-struct MemoryExtractionJob {
-    agent: crate::agents::Agent,
-    manager: crate::agents::AgentManager,
-    context: String,
-    agent_tx: std::sync::mpsc::Sender<AgentEvent>,
 }

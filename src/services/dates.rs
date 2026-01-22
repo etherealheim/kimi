@@ -46,7 +46,7 @@ impl DateReference {
     pub fn as_date(&self) -> Option<NaiveDate> {
         match self {
             DateReference::Date(date) => Some(*date),
-            _ => None,
+            DateReference::Range(_) | DateReference::Week(_) => None,
         }
     }
 
@@ -66,7 +66,7 @@ impl DateReference {
     pub fn as_week(&self) -> Option<IsoWeek> {
         match self {
             DateReference::Week(week) => Some(*week),
-            _ => None,
+            DateReference::Date(_) | DateReference::Range(_) => None,
         }
     }
 }
@@ -231,7 +231,7 @@ pub fn resolve_query_week(query: &str) -> IsoWeek {
 
 /// Computes the Monday of a specific ISO week
 pub fn date_for_iso_week(year: i32, week: u32) -> Option<NaiveDate> {
-    if week < 1 || week > 53 {
+    if !(1..=53).contains(&week) {
         return None;
     }
     // ISO week 1 is the week containing the first Thursday of the year
@@ -247,11 +247,11 @@ pub fn date_for_iso_week(year: i32, week: u32) -> Option<NaiveDate> {
 fn this_month_range(today: NaiveDate) -> DateRange {
     let year = today.year();
     let month = today.month();
-    let start = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+    let start = NaiveDate::from_ymd_opt(year, month, 1).unwrap_or(today);
     let end = if month == 12 {
-        NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap() - chrono::Duration::days(1)
+        NaiveDate::from_ymd_opt(year + 1, 1, 1).map_or(today, |d| d - chrono::Duration::days(1))
     } else {
-        NaiveDate::from_ymd_opt(year, month + 1, 1).unwrap() - chrono::Duration::days(1)
+        NaiveDate::from_ymd_opt(year, month + 1, 1).map_or(today, |d| d - chrono::Duration::days(1))
     };
     DateRange { start, end }
 }
@@ -264,8 +264,8 @@ fn last_month_range(today: NaiveDate) -> DateRange {
     } else {
         (year, month - 1)
     };
-    let start = NaiveDate::from_ymd_opt(prev_year, prev_month, 1).unwrap();
-    let end = NaiveDate::from_ymd_opt(year, month, 1).unwrap() - chrono::Duration::days(1);
+    let start = NaiveDate::from_ymd_opt(prev_year, prev_month, 1).unwrap_or(today);
+    let end = NaiveDate::from_ymd_opt(year, month, 1).map_or(today, |d| d - chrono::Duration::days(1));
     DateRange { start, end }
 }
 
@@ -277,11 +277,12 @@ fn next_month_range(today: NaiveDate) -> DateRange {
     } else {
         (year, month + 1)
     };
-    let start = NaiveDate::from_ymd_opt(next_year, next_month, 1).unwrap();
+    let start = NaiveDate::from_ymd_opt(next_year, next_month, 1).unwrap_or(today);
     let end = if next_month == 12 {
-        NaiveDate::from_ymd_opt(next_year + 1, 1, 1).unwrap() - chrono::Duration::days(1)
+        NaiveDate::from_ymd_opt(next_year + 1, 1, 1).map_or(today, |d| d - chrono::Duration::days(1))
     } else {
-        NaiveDate::from_ymd_opt(next_year, next_month + 1, 1).unwrap() - chrono::Duration::days(1)
+        NaiveDate::from_ymd_opt(next_year, next_month + 1, 1)
+            .map_or(today, |d| d - chrono::Duration::days(1))
     };
     DateRange { start, end }
 }
@@ -290,22 +291,22 @@ fn next_month_range(today: NaiveDate) -> DateRange {
 
 fn this_year_range(today: NaiveDate) -> DateRange {
     let year = today.year();
-    let start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
-    let end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap();
+    let start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap_or(today);
+    let end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap_or(today);
     DateRange { start, end }
 }
 
 fn last_year_range(today: NaiveDate) -> DateRange {
     let year = today.year() - 1;
-    let start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
-    let end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap();
+    let start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap_or(today);
+    let end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap_or(today);
     DateRange { start, end }
 }
 
 fn next_year_range(today: NaiveDate) -> DateRange {
     let year = today.year() + 1;
-    let start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
-    let end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap();
+    let start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap_or(today);
+    let end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap_or(today);
     DateRange { start, end }
 }
 
@@ -315,41 +316,47 @@ fn parse_relative_range(lowered: &str, today: NaiveDate) -> Option<DateRange> {
     let tokens: Vec<&str> = lowered.split_whitespace().collect();
     
     // "last N days" or "past N days"
-    for i in 0..tokens.len().saturating_sub(2) {
-        if tokens[i] == "last" || tokens[i] == "past" {
-            if let Ok(count) = tokens[i + 1].parse::<i64>() {
-                if tokens[i + 2] == "days" || tokens[i + 2] == "day" {
-                    let start = today - chrono::Duration::days(count);
-                    return Some(DateRange { start, end: today });
-                }
-                if tokens[i + 2] == "weeks" || tokens[i + 2] == "week" {
-                    let start = today - chrono::Duration::weeks(count);
-                    return Some(DateRange { start, end: today });
-                }
-                if tokens[i + 2] == "months" || tokens[i + 2] == "month" {
-                    let start = today - chrono::Duration::days(count * 30);
-                    return Some(DateRange { start, end: today });
-                }
+    for window in tokens.windows(3) {
+        let [first, second, third] = window else {
+            continue;
+        };
+        if (*first == "last" || *first == "past")
+            && let Ok(count) = second.parse::<i64>()
+        {
+            if *third == "days" || *third == "day" {
+                let start = today - chrono::Duration::days(count);
+                return Some(DateRange { start, end: today });
+            }
+            if *third == "weeks" || *third == "week" {
+                let start = today - chrono::Duration::weeks(count);
+                return Some(DateRange { start, end: today });
+            }
+            if *third == "months" || *third == "month" {
+                let start = today - chrono::Duration::days(count * 30);
+                return Some(DateRange { start, end: today });
             }
         }
     }
 
     // "next N days/weeks/months"
-    for i in 0..tokens.len().saturating_sub(2) {
-        if tokens[i] == "next" {
-            if let Ok(count) = tokens[i + 1].parse::<i64>() {
-                if tokens[i + 2] == "days" || tokens[i + 2] == "day" {
-                    let end = today + chrono::Duration::days(count);
-                    return Some(DateRange { start: today, end });
-                }
-                if tokens[i + 2] == "weeks" || tokens[i + 2] == "week" {
-                    let end = today + chrono::Duration::weeks(count);
-                    return Some(DateRange { start: today, end });
-                }
-                if tokens[i + 2] == "months" || tokens[i + 2] == "month" {
-                    let end = today + chrono::Duration::days(count * 30);
-                    return Some(DateRange { start: today, end });
-                }
+    for window in tokens.windows(3) {
+        let [first, second, third] = window else {
+            continue;
+        };
+        if *first == "next"
+            && let Ok(count) = second.parse::<i64>()
+        {
+            if *third == "days" || *third == "day" {
+                let end = today + chrono::Duration::days(count);
+                return Some(DateRange { start: today, end });
+            }
+            if *third == "weeks" || *third == "week" {
+                let end = today + chrono::Duration::weeks(count);
+                return Some(DateRange { start: today, end });
+            }
+            if *third == "months" || *third == "month" {
+                let end = today + chrono::Duration::days(count * 30);
+                return Some(DateRange { start: today, end });
             }
         }
     }
@@ -417,21 +424,26 @@ fn parse_day_offset(text: &str) -> Option<i64> {
     
     // "N days ago" or "N day ago"
     for window in tokens.windows(3) {
-        if let [number, "days" | "day", "ago"] = window {
-            if let Ok(value) = number.parse::<i64>() {
-                return Some(-value);
-            }
+        let [number, unit, ago] = window else {
+            continue;
+        };
+        if (*unit == "days" || *unit == "day") && *ago == "ago"
+            && let Ok(value) = number.parse::<i64>()
+        {
+            return Some(-value);
         }
     }
     
     // "in N days" or "in N day"
-    for i in 0..tokens.len().saturating_sub(2) {
-        if tokens[i] == "in" {
-            if let Ok(value) = tokens[i + 1].parse::<i64>() {
-                if tokens[i + 2] == "days" || tokens[i + 2] == "day" {
-                    return Some(value);
-                }
-            }
+    for window in tokens.windows(3) {
+        let [first, second, third] = window else {
+            continue;
+        };
+        if *first == "in"
+            && let Ok(value) = second.parse::<i64>()
+            && (*third == "days" || *third == "day")
+        {
+            return Some(value);
         }
     }
     
@@ -441,7 +453,10 @@ fn parse_day_offset(text: &str) -> Option<i64> {
 // Word boundary checking
 
 fn contains_word(text: &str, word: &str) -> bool {
-    text.split_whitespace().any(|w| w == word)
+    text.split_whitespace().any(|w| {
+        let trimmed = w.trim_matches(|c: char| !c.is_alphanumeric());
+        trimmed.eq_ignore_ascii_case(word)
+    })
 }
 
 /// Checks if a date falls within a range (inclusive)
@@ -456,17 +471,19 @@ fn parse_week_token(token: &str) -> Option<IsoWeek> {
     if parts.len() != 2 {
         return None;
     }
-    if parts[0].len() != 4 {
+    let year_part = parts.first()?;
+    let week_part = parts.get(1)?;
+    if year_part.len() != 4 {
         return None;
     }
-    let year = parts[0].parse::<i32>().ok()?;
-    let week_str = parts[1].trim_start_matches('0');
+    let year = year_part.parse::<i32>().ok()?;
+    let week_str = week_part.trim_start_matches('0');
     let week = if week_str.is_empty() {
         0
     } else {
         week_str.parse::<u32>().ok()?
     };
-    if week < 1 || week > 53 {
+    if !(1..=53).contains(&week) {
         return None;
     }
     Some(IsoWeek { year, week })
@@ -474,9 +491,11 @@ fn parse_week_token(token: &str) -> Option<IsoWeek> {
 
 fn weeks_in_year(year: i32) -> u32 {
     // ISO 8601: A year has 53 weeks if Dec 31 (or Dec 30 for leap years) is a Thursday
-    let dec31 = NaiveDate::from_ymd_opt(year, 12, 31).unwrap_or_else(|| {
-        NaiveDate::from_ymd_opt(year, 12, 30).unwrap()
-    });
+    let dec31 = NaiveDate::from_ymd_opt(year, 12, 31)
+        .or_else(|| NaiveDate::from_ymd_opt(year, 12, 30));
+    let Some(dec31) = dec31 else {
+        return 52;
+    };
     let iso = dec31.iso_week();
     if iso.year() == year {
         iso.week()

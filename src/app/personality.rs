@@ -4,8 +4,7 @@ use color_eyre::Result;
 
 const BASE_PERSONALITY_INDEX: usize = 0;
 const MY_PERSONALITY_INDEX: usize = 1;
-const MEMORIES_INDEX: usize = 2;
-const PERSONALITY_ITEMS_OFFSET: usize = 3;
+const PERSONALITY_ITEMS_OFFSET: usize = 2;
 
 impl App {
     pub fn open_personality_menu(&mut self) -> Result<()> {
@@ -67,13 +66,6 @@ impl App {
             }
             return Ok(());
         }
-        if self.personality_selected_index == MEMORIES_INDEX {
-            if let Err(error) = crate::services::memories::open_memories_in_new_terminal() {
-                crate::services::memories::open_memories_in_place()?;
-                self.add_system_message(&format!("Memories editor error: {}", error));
-            }
-            return Ok(());
-        }
         let name = self
             .personality_items
             .get(self.personality_selected_index.saturating_sub(PERSONALITY_ITEMS_OFFSET))
@@ -87,7 +79,7 @@ impl App {
     }
 
     pub fn delete_selected_personality(&mut self) -> Result<()> {
-        if self.personality_selected_index <= MEMORIES_INDEX {
+        if self.personality_selected_index < PERSONALITY_ITEMS_OFFSET {
             self.add_system_message("This entry cannot be deleted");
             return Ok(());
         }
@@ -105,10 +97,10 @@ impl App {
         crate::services::personality::delete_personality(&name)?;
         self.reload_personality_items()?;
 
-        if self.personality_name.as_deref() == Some(&name) {
-            if let Some(first) = self.personality_items.first().cloned() {
-                self.set_active_personality(&first)?;
-            }
+        if self.personality_name.as_deref() == Some(&name)
+            && let Some(first) = self.personality_items.first().cloned()
+        {
+            self.set_active_personality(&first)?;
         }
 
         let total_items = self.personality_items.len() + PERSONALITY_ITEMS_OFFSET;
@@ -124,13 +116,6 @@ impl App {
             return self.edit_selected_personality();
         }
         if self.personality_selected_index == MY_PERSONALITY_INDEX {
-            return Ok(());
-        }
-        if self.personality_selected_index == MEMORIES_INDEX {
-            if let Err(error) = crate::services::memories::open_memories_in_new_terminal() {
-                crate::services::memories::open_memories_in_place()?;
-                self.add_system_message(&format!("Memories editor error: {}", error));
-            }
             return Ok(());
         }
         if let Some(name) = self
@@ -150,15 +135,14 @@ impl App {
         items.sort();
         self.personality_items = items;
 
-        if let Some(active) = &self.personality_name {
-            if let Some(index) = self
+        if let Some(active) = &self.personality_name
+            && let Some(index) = self
                 .personality_items
                 .iter()
                 .position(|name| name == active)
-            {
-                self.personality_selected_index = index + PERSONALITY_ITEMS_OFFSET;
-                return Ok(());
-            }
+        {
+            self.personality_selected_index = index + PERSONALITY_ITEMS_OFFSET;
+            return Ok(());
         }
 
         self.personality_selected_index = if self.personality_items.is_empty() {

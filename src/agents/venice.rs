@@ -97,7 +97,7 @@ pub fn chat(api_key: &str, model: &str, messages: &[crate::agents::ChatMessage])
                     let payload: VeniceChatResponse = response.json()?;
                     return payload
                         .choices
-                        .get(0)
+                        .first()
                         .map(|choice| choice.message.content.clone())
                         .ok_or_else(|| color_eyre::eyre::eyre!("Venice response missing content"));
                 }

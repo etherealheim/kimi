@@ -107,7 +107,7 @@ pub fn render_text_input(frame: &mut Frame, area: Rect, config: TextInputConfig)
 
     frame.render_widget(
         Paragraph::new(line).block({
-            let title_style = config.title_style.unwrap_or_else(Style::default);
+            let title_style = config.title_style.unwrap_or_default();
             let title = Line::from(vec![Span::styled(config.title, title_style)]);
             Block::default()
                 .borders(Borders::ALL)

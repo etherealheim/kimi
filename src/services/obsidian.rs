@@ -203,13 +203,14 @@ pub fn week_note_checklist(
         let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
             continue;
         };
-        if let Some((year, parsed_week)) = parse_weekly_date(stem) {
-            if year == week.year && parsed_week == week.week {
-                let Ok(content) = fs::read_to_string(&path) else {
-                    return Ok(Vec::new());
-                };
-                return Ok(extract_checklist_items(&content));
-            }
+        if let Some((year, parsed_week)) = parse_weekly_date(stem)
+            && year == week.year
+            && parsed_week == week.week
+        {
+            let Ok(content) = fs::read_to_string(&path) else {
+                return Ok(Vec::new());
+            };
+            return Ok(extract_checklist_items(&content));
         }
     }
     Ok(Vec::new())
@@ -255,8 +256,7 @@ fn collect_markdown_files(root: &Path) -> Result<Vec<PathBuf>> {
             if path
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .map(|ext| ext.eq_ignore_ascii_case("md"))
-                .unwrap_or(false)
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
             {
                 files.push(path);
             }
@@ -286,15 +286,17 @@ fn parse_weekly_date(stem: &str) -> Option<(i32, u32)> {
     if parts.len() != 2 {
         return None;
     }
-    let year = parts[0].parse::<i32>().ok()?;
-    let week_str = parts[1].trim_start_matches('0');
+    let year_part = parts.first()?;
+    let week_part = parts.get(1)?;
+    let year = year_part.parse::<i32>().ok()?;
+    let week_str = week_part.trim_start_matches('0');
     let week = if week_str.is_empty() {
         0
     } else {
         week_str.parse::<u32>().ok()?
     };
     // Validate week range (1-53)
-    if week < 1 || week > 53 {
+    if !(1..=53).contains(&week) {
         return None;
     }
     Some((year, week))
@@ -382,7 +384,7 @@ fn normalize_for_match(value: &str) -> String {
     value
         .chars()
         .filter(|character| character.is_alphanumeric())
-        .flat_map(|character| character.to_lowercase())
+        .flat_map(char::to_lowercase)
         .collect()
 }
 
@@ -415,7 +417,10 @@ fn extract_snippet(content: &str, tokens: &[String], max_lines: usize) -> String
     if let Some(index) = best_line {
         let start = index.saturating_sub(1);
         let end = (index + max_lines).min(lines.len());
-        return lines[start..end].join("\n");
+        return lines
+            .get(start..end)
+            .map(|slice| slice.join("\n"))
+            .unwrap_or_default();
     }
     if lowered.trim().is_empty() {
         return String::new();

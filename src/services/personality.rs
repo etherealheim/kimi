@@ -32,13 +32,12 @@ pub fn list_personalities() -> Result<Vec<String>> {
         if path.extension().and_then(|ext| ext.to_str()) != Some(PERSONALITY_EXTENSION) {
             continue;
         }
-        if let Some(name) = path.file_stem().and_then(|name| name.to_str()) {
-            if name != MY_PERSONALITY_NAME
-                && name != MEMORIES_ENTRY_NAME
-                && name != BASE_PERSONALITY_NAME
-            {
-                names.push(name.to_string());
-            }
+        if let Some(name) = path.file_stem().and_then(|name| name.to_str())
+            && name != MY_PERSONALITY_NAME
+            && name != MEMORIES_ENTRY_NAME
+            && name != BASE_PERSONALITY_NAME
+        {
+            names.push(name.to_string());
         }
     }
     names.sort();
@@ -384,6 +383,9 @@ fn migrate_legacy_personality_files(personality_dir: &PathBuf) -> Result<()> {
         let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
             continue;
         };
+        if is_memories_personality_name(stem) {
+            continue;
+        }
         let target = personality_dir.join(format!("{}.{}", stem, PERSONALITY_EXTENSION));
         if !target.exists() {
             fs::rename(&path, target)?;
@@ -403,6 +405,11 @@ fn migrate_legacy_personality_dir(target_dir: &PathBuf) -> Result<()> {
         if !path.is_file() {
             continue;
         }
+        if let Some(stem) = path.file_stem().and_then(|name| name.to_str())
+            && is_memories_personality_name(stem)
+        {
+            continue;
+        }
         let Some(file_name) = path.file_name() else {
             continue;
         };
@@ -414,4 +421,8 @@ fn migrate_legacy_personality_dir(target_dir: &PathBuf) -> Result<()> {
     }
     migrate_legacy_personality_files(target_dir)?;
     Ok(())
+}
+
+fn is_memories_personality_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case(MEMORIES_ENTRY_NAME)
 }

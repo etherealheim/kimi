@@ -8,6 +8,7 @@ const MAX_OBSIDIAN_CONTEXT_CHARS: usize = 8000;
 pub struct ObsidianContext {
     pub content: String,
     pub count: usize,
+    pub raw_notes: Vec<crate::services::obsidian::NoteSnippet>,
 }
 
 pub struct ObsidianContextRequest<'a> {
@@ -39,6 +40,7 @@ pub fn build_obsidian_context(
             return Ok(Some(ObsidianContext {
                 content: "--- Obsidian notes ---\nObsidian vault path is not configured.".to_string(),
                 count: 0,
+                raw_notes: vec![],
             }));
         }
         return Ok(None);
@@ -51,6 +53,7 @@ pub fn build_obsidian_context(
                     vault_path
                 ),
                 count: 0,
+                raw_notes: vec![],
             }));
         }
         return Ok(None);
@@ -65,6 +68,7 @@ pub fn build_obsidian_context(
         } => {
             let notes = obsidian::week_notes_context(vault_path, week)?;
             let count = notes.len();
+            let raw_notes = notes.clone();
             let mut blocks = Vec::new();
             if let Some(content) =
                 obsidian::format_obsidian_context("Obsidian weekly notes", &notes)
@@ -90,6 +94,7 @@ pub fn build_obsidian_context(
             Ok(Some(ObsidianContext {
                 content: blocks.join("\n"),
                 count,
+                raw_notes,
             }))
         }
         ObsidianAction::DailyNotesRange { range } => {
@@ -97,8 +102,9 @@ pub fn build_obsidian_context(
             if let Some(content) = obsidian::format_obsidian_context("Obsidian daily notes", &notes)
             {
                 let count = notes.len();
+                let raw_notes = notes.clone();
                 let content = clamp_context_chars(&content, MAX_OBSIDIAN_CONTEXT_CHARS);
-                return Ok(Some(ObsidianContext { content, count }));
+                return Ok(Some(ObsidianContext { content, count, raw_notes }));
             }
             if intent.is_note_lookup {
                 let content = format!(
@@ -106,7 +112,7 @@ pub fn build_obsidian_context(
                     range.start.format("%Y-%m-%d"),
                     range.end.format("%Y-%m-%d")
                 );
-                return Ok(Some(ObsidianContext { content, count: 0 }));
+                return Ok(Some(ObsidianContext { content, count: 0, raw_notes: vec![] }));
             }
             Ok(None)
         }
@@ -114,15 +120,16 @@ pub fn build_obsidian_context(
             let notes = obsidian::search_notes(vault_path, request.query, 8)?;
             if let Some(content) = obsidian::format_obsidian_context("Obsidian notes", &notes) {
                 let count = notes.len();
+                let raw_notes = notes.clone();
                 let content = clamp_context_chars(&content, MAX_OBSIDIAN_CONTEXT_CHARS);
-                return Ok(Some(ObsidianContext { content, count }));
+                return Ok(Some(ObsidianContext { content, count, raw_notes }));
             }
             if intent.is_note_lookup {
                 let content = format!(
                     "--- Obsidian notes ---\nNo matching notes found for \"{}\".",
                     request.query.trim()
                 );
-                return Ok(Some(ObsidianContext { content, count: 0 }));
+                return Ok(Some(ObsidianContext { content, count: 0, raw_notes: vec![] }));
             }
             Ok(None)
         }
@@ -146,10 +153,10 @@ fn select_obsidian_action(intent: QueryIntent, lowered: &str) -> Option<Obsidian
                 week,
             });
         }
-        if let Some(reference) = reference {
-            if let Some(range) = reference.as_range() {
-                return Some(ObsidianAction::DailyNotesRange { range });
-            }
+        if let Some(reference) = reference
+            && let Some(range) = reference.as_range()
+        {
+            return Some(ObsidianAction::DailyNotesRange { range });
         }
         return Some(ObsidianAction::WeeklyNotes {
             include_checklist: is_checklist_query(lowered),
@@ -163,10 +170,10 @@ fn select_obsidian_action(intent: QueryIntent, lowered: &str) -> Option<Obsidian
                 week,
             });
         }
-        if let Some(reference) = reference {
-            if let Some(range) = reference.as_range() {
-                return Some(ObsidianAction::DailyNotesRange { range });
-            }
+        if let Some(reference) = reference
+            && let Some(range) = reference.as_range()
+        {
+            return Some(ObsidianAction::DailyNotesRange { range });
         }
         return Some(ObsidianAction::NoteSearch);
     }

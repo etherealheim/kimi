@@ -8,6 +8,15 @@ use color_eyre::Result;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+fn query_is_notes_follow_up(query: &str) -> bool {
+    let lowered = query.to_lowercase();
+    let note_follow_up_terms = [
+        "show", "display", "bring", "give me", "raw", "full", "complete", 
+        "content", "note", "notes", "it", "that", "them"
+    ];
+    note_follow_up_terms.iter().any(|term| lowered.contains(term))
+}
+
 impl App {
     /// Adds a user message to the chat history with timestamp
     fn add_user_message_to_history(&mut self, message_content: &str) {
@@ -18,6 +27,29 @@ impl App {
             display_name: None,
             context_usage: None,
         });
+    }
+    
+    /// Retrieves relevant messages from storage using App's existing connection
+    fn retrieve_messages_for_query(&self, query: &str) -> Vec<crate::storage::RetrievedMessage> {
+        let Some(storage) = &self.storage else {
+            return Vec::new();
+        };
+        let Some(runtime) = self.storage_runtime() else {
+            return Vec::new();
+        };
+        
+        let embeddings_config = crate::config::Config::load()
+            .map(|c| c.embeddings)
+            .unwrap_or_default();
+        
+        runtime.block_on(async {
+            crate::services::retrieval::retrieve_relevant_messages(
+                storage,
+                query,
+                embeddings_config.max_retrieved_messages,
+                embeddings_config.similarity_threshold,
+            ).await.unwrap_or_default()
+        })
     }
 
     pub fn send_chat_message(&mut self) -> Result<()> {
@@ -56,15 +88,27 @@ impl App {
             query: &user_message,
             intent,
         };
-        self.is_searching = self.should_mark_searching(search_request);
-        self.is_fetching_notes = crate::app::chat::agent::obsidian::should_fetch_obsidian_for_intent(
+        let is_profile_query = crate::services::retrieval::is_profile_query(&user_message);
+        self.is_searching = !is_profile_query && self.should_mark_searching(search_request);
+        self.is_retrieving = should_mark_retrieving(&user_message);
+        let is_fetching_notes = crate::app::chat::agent::obsidian::should_fetch_obsidian_for_intent(
             &self.connect_obsidian_vault,
             &user_message,
             intent,
         );
+        self.is_fetching_notes = is_fetching_notes;
         self.is_analyzing = !self.chat_attachments.is_empty();
+        
+        // Clear cached notes if query is not about notes/follow-up
+        if !is_fetching_notes && !query_is_notes_follow_up(&user_message) {
+            self.cached_obsidian_notes = None;
+        }
 
         let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
+        
+        // Do retrieval BEFORE spawning thread (while we have access to App's storage)
+        let pre_retrieved = self.retrieve_messages_for_query(&user_message);
+        
         let snapshot = crate::app::chat::agent::ChatBuildSnapshot {
             system_prompt: agent.system_prompt.clone(),
             chat_history: self.chat_history.clone(),
@@ -73,6 +117,8 @@ impl App {
             personality_name: self.personality_name.clone(),
             connect_obsidian_vault: self.connect_obsidian_vault.clone(),
             connect_brave_key: self.connect_brave_key.clone(),
+            pre_retrieved_messages: pre_retrieved,
+            cached_obsidian_notes: self.cached_obsidian_notes.clone(),
         };
         let attachments = self.chat_attachments.clone();
         self.chat_attachments.clear();
@@ -81,9 +127,23 @@ impl App {
             let build_result = crate::app::chat::agent::build_agent_messages_from_snapshot(
                 snapshot, &agent, &manager,
             );
-            if let Some(notice) = build_result.pending_search_notice {
-                let _ = agent_tx.send(crate::app::AgentEvent::SystemMessage(notice));
+            
+            // Send notes for caching if fetched
+            if let Some((query, notes)) = build_result.notes_to_cache {
+                let _ = agent_tx.send(crate::app::AgentEvent::CacheObsidianNotes { query, notes });
+            }
+            
+            if let Some(response) = build_result.forced_response {
+                let _ = agent_tx.send(crate::app::AgentEvent::ResponseWithContext {
+                    response,
+                    context_usage: build_result.context_usage,
+                });
                 return;
+            }
+            // If search had an issue, notify the user but still proceed with the agent request
+            // This allows the agent to respond even when search fails
+            if let Some(notice) = &build_result.pending_search_notice {
+                let _ = agent_tx.send(crate::app::AgentEvent::SystemMessage(notice.clone()));
             }
             let mut messages = build_result.messages;
             if let Ok(images) = build_attachment_images_from_attachments(&attachments) {
@@ -315,22 +375,22 @@ fn parse_image_path(input: &str) -> Option<PathBuf> {
     if candidate.starts_with("file://") {
         candidate = candidate.trim_start_matches("file://").to_string();
     }
-    if candidate.starts_with("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            candidate = format!("{}/{}", home, candidate.trim_start_matches("~/"));
-        }
+    if candidate.starts_with("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        candidate = format!("{}/{}", home, candidate.trim_start_matches("~/"));
     }
     if candidate.starts_with("home/") {
         candidate = format!("/{}", candidate);
-    } else if let Ok(user) = std::env::var("USER") {
-        if candidate.starts_with(&format!("{}/", user)) {
-            candidate = format!("/home/{}", candidate);
-        }
+    } else if let Ok(user) = std::env::var("USER")
+        && candidate.starts_with(&format!("{}/", user))
+    {
+        candidate = format!("/home/{}", candidate);
     }
-    if !candidate.starts_with('/') && !candidate.starts_with("~/") && candidate.contains('/') {
-        if let Ok(home) = std::env::var("HOME") {
-            candidate = format!("{}/{}", home, candidate);
-        }
+    if !candidate.starts_with('/') && !candidate.starts_with("~/") && candidate.contains('/')
+        && let Ok(home) = std::env::var("HOME")
+    {
+        candidate = format!("{}/{}", home, candidate);
     }
     if candidate.is_empty() {
         return None;
@@ -428,7 +488,7 @@ fn try_handle_date_question(input: &str) -> Option<String> {
         ));
     }
     if let Some(days) = parse_day_offset(&lowered) {
-        let date = today + chrono::Duration::days(days.into());
+        let date = today + chrono::Duration::days(days);
         if days >= 0 {
             return Some(format!(
                 "In {} days it will be {}.",
@@ -680,24 +740,23 @@ fn should_handle_time_question(lowered: &str) -> bool {
 fn parse_day_offset(text: &str) -> Option<i64> {
     let tokens: Vec<&str> = text.split_whitespace().collect();
     for window in tokens.windows(3) {
-        if let [number, "days", "ago"] = window {
-            if let Ok(value) = number.parse::<i64>() {
-                return Some(-value);
-            }
+        if let [number, "days", "ago"] = window
+            && let Ok(value) = number.parse::<i64>()
+        {
+            return Some(-value);
         }
-        if let [number, "days", "from"] = window {
-            if let Ok(value) = number.parse::<i64>() {
-                return Some(value);
-            }
+        if let [number, "days", "from"] = window
+            && let Ok(value) = number.parse::<i64>()
+        {
+            return Some(value);
         }
     }
     for window in tokens.windows(2) {
-        if let [number, "days"] = window {
-            if let Ok(value) = number.parse::<i64>() {
-                if text.contains("in ") {
-                    return Some(value);
-                }
-            }
+        if let [number, "days"] = window
+            && let Ok(value) = number.parse::<i64>()
+            && text.contains("in ")
+        {
+            return Some(value);
         }
     }
     None
@@ -754,4 +813,42 @@ fn parse_weekday(text: &str) -> Option<chrono::Weekday> {
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
+}
+
+/// Determines if the query might trigger memory retrieval
+fn should_mark_retrieving(query: &str) -> bool {
+    let lowered = query.to_lowercase();
+    let memory_triggers = [
+        "what do i like",
+        "what do i love",
+        "what do i prefer",
+        "what did i say",
+        "what did i tell",
+        "what did i mention",
+        "what have i said",
+        "do i like",
+        "do i love",
+        "do i prefer",
+        "did i say",
+        "did i tell",
+        "did i mention",
+        "about me",
+        "who am i",
+        "my profile",
+        "my preferences",
+        "my favorite",
+        "my favourite",
+        "remember when",
+        "remember that",
+        "recall",
+        "you know about me",
+        "you know that i",
+        "told you",
+        "mentioned",
+        "we talked",
+        "we discussed",
+        "last time",
+        "previously",
+    ];
+    memory_triggers.iter().any(|trigger| lowered.contains(trigger))
 }

@@ -9,11 +9,6 @@ pub struct SummaryEntry {
     pub summary: String,
 }
 
-pub struct MemoryContext {
-    pub content: String,
-    pub count: usize,
-}
-
 #[derive(Debug, Clone, Copy)]
 enum SummaryRange {
     Today,
@@ -33,7 +28,12 @@ pub fn build_conversation_summary_entries(
     let Some(range) = summary_time_range(query) else {
         return Ok(Vec::new());
     };
-    let conversations = storage.load_conversations()?;
+    
+    let runtime = tokio::runtime::Runtime::new()?;
+    let conversations = runtime.block_on(async {
+        storage.load_conversations().await
+    })?;
+    
     Ok(filter_summaries_by_range(&conversations, range))
 }
 
@@ -43,47 +43,6 @@ pub fn format_summary_entries(entries: &[SummaryEntry]) -> String {
         .map(|entry| format!("- {}: {}", entry.date, entry.summary))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-pub fn build_memory_context(
-    blocks: &crate::services::memories::MemoryBlocks,
-    query: &str,
-) -> Option<MemoryContext> {
-    let tokens = tokenize_query(query);
-    if tokens.is_empty() && !query.contains(':') {
-        return None;
-    }
-    let lowered_query = query.to_lowercase();
-    let mut sections = Vec::new();
-    let mut section_count = 0usize;
-    for (tag, lines) in &blocks.contexts {
-        let tag_match = lowered_query.contains(tag);
-        let filtered: Vec<String> = if tag_match {
-            lines.clone()
-        } else {
-            lines
-                .iter()
-                .filter(|line| line_matches_tokens(line, &tokens))
-                .cloned()
-                .collect()
-        };
-        if filtered.is_empty() {
-            continue;
-        }
-        // Count sections (e.g., likes, projects) rather than individual lines
-        section_count += 1;
-        sections.push(format!("[context:{}]", tag));
-        sections.extend(filtered);
-        sections.push(String::new());
-    }
-    if section_count == 0 {
-        return None;
-    }
-    let content = sections.join("\n").trim_end().to_string();
-    Some(MemoryContext {
-        content,
-        count: section_count,
-    })
 }
 
 pub fn count_summary_matches(entries: &[SummaryEntry], tokens: &[String]) -> usize {
@@ -175,17 +134,17 @@ fn has_summary_intent(lowered: &str) -> bool {
 fn parse_last_days(lowered: &str) -> Option<u32> {
     let tokens: Vec<&str> = lowered.split_whitespace().collect();
     for window in tokens.windows(3) {
-        if let [number, "days", "ago"] = window {
-            if let Ok(value) = number.parse::<u32>() {
-                return Some(value);
-            }
+        if let [number, "days", "ago"] = window
+            && let Ok(value) = number.parse::<u32>()
+        {
+            return Some(value);
         }
     }
     for window in tokens.windows(3) {
-        if let [number, "days", "back"] = window {
-            if let Ok(value) = number.parse::<u32>() {
-                return Some(value);
-            }
+        if let [number, "days", "back"] = window
+            && let Ok(value) = number.parse::<u32>()
+        {
+            return Some(value);
         }
     }
     None
@@ -291,12 +250,4 @@ fn is_week_token(token: &str) -> bool {
         .take(2)
         .all(|character| character.is_ascii_digit());
     year_ok && week_ok
-}
-
-fn line_matches_tokens(value: &str, tokens: &[String]) -> bool {
-    if tokens.is_empty() {
-        return false;
-    }
-    let lowered = value.to_lowercase();
-    tokens.iter().any(|token| lowered.contains(token))
 }

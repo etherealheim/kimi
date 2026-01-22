@@ -23,7 +23,7 @@ pub fn download_video_with_progress(url: &str, mut on_progress: impl FnMut(u8)) 
 
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
-        for line in reader.lines().flatten() {
+        for line in reader.lines().map_while(Result::ok) {
             if let Some(progress) = parse_progress_percent(&line) {
                 on_progress(progress);
             }

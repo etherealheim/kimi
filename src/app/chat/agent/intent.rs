@@ -151,8 +151,7 @@ fn is_external_event_query(lowered: &str) -> bool {
     let has_location = [" in ", " near ", " at "]
         .iter()
         .any(|token| lowered.contains(token));
-    (has_event_term && (has_time_term || has_location))
-        || (lowered.contains("news") && (has_time_term || has_location))
+    (has_event_term || lowered.contains("news")) && (has_time_term || has_location)
 }
 
 fn is_explicit_intent(intent: QueryIntent) -> bool {

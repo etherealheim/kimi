@@ -1,6 +1,6 @@
 use crate::app::types::{ChatMessage, MessageRole};
 use crate::app::{App, AgentEvent};
-use crate::storage::ConversationData;
+use crate::storage::{ConversationData, ConversationMessage};
 use chrono::Local;
 use color_eyre::Result;
 
@@ -16,6 +16,7 @@ impl App {
                 } => {
                     self.is_loading = false;
                     self.is_searching = false;
+                    self.is_retrieving = false;
                     self.is_analyzing = false;
                     self.is_fetching_notes = false;
                     self.last_response = Some(response.clone());
@@ -36,18 +37,21 @@ impl App {
                         self.chat_scroll_offset = 0;
                     }
 
+                    if let Err(error) = self.persist_conversation_messages() {
+                        self.add_system_message(&format!("HISTORY SAVE FAILED: {}", error));
+                    }
+
                     if self.auto_tts_enabled
                         && let Some(tts) = &self.tts_service
                         && tts.is_configured()
                     {
                         let _ = tts.speak_text(&response);
                     }
-
-                    let _ = self.queue_realtime_memory_extraction(&response);
                 }
                 AgentEvent::Error(error) => {
                     self.is_loading = false;
                     self.is_searching = false;
+                    self.is_retrieving = false;
                     self.is_analyzing = false;
                     self.is_fetching_notes = false;
                     self.chat_history.push(ChatMessage {
@@ -69,7 +73,10 @@ impl App {
                     self.summary_frame = 0;
                     self.last_summary_tick = None;
 
-                    if let Some(storage) = &self.storage {
+                    self.ensure_storage();
+                    if let (Some(storage), Some(rt)) =
+                        (self.storage.as_ref(), self.storage_runtime())
+                    {
                         let agent_name = self
                             .current_agent
                             .as_ref()
@@ -79,74 +86,45 @@ impl App {
 
                         let (short_summary, detailed_summary) =
                             Self::parse_summary_pair(&summary);
-                        if let Some(conversation_id) = self.current_conversation_id {
-                            let _ = storage.update_conversation(
-                                conversation_id,
-                                &short_summary,
-                                &detailed_summary,
-                                &messages,
-                            );
+
+                        if let Some(conversation_id) = &self.current_conversation_id {
+                            let conv_id_clone = conversation_id.clone();
+                            let _ = rt.block_on(async {
+                                storage.update_conversation(
+                                    &conv_id_clone,
+                                    &short_summary,
+                                    &detailed_summary,
+                                    &messages,
+                                ).await
+                            });
+                            
+                            // Save messages with embeddings
+                            let _ = self.save_messages_with_embeddings(rt, storage, conversation_id, &messages);
                         } else {
                             let conversation_data = ConversationData::new(agent_name, &messages)
                                 .with_summary(&short_summary)
                                 .with_detailed_summary(&detailed_summary);
 
-                            if let Ok(conversation_id) = storage.save_conversation(conversation_data)
-                            {
+                            if let Ok(conversation_id) = rt.block_on(async {
+                                storage.save_conversation(conversation_data).await
+                            }) {
+                                // Save messages with embeddings
+                                let _ = self.save_messages_with_embeddings(rt, storage, &conversation_id, &messages);
                                 self.current_conversation_id = Some(conversation_id);
                             }
                         }
                     }
                     if self.mode != crate::app::AppMode::History {
                         self.open_history();
-                    } else if let Some(conversation_id) = self.current_conversation_id {
+                    } else if let Some(conversation_id) = self.current_conversation_id.clone() {
                         self.load_history_list();
-                        self.select_history_conversation(conversation_id);
-                    }
-                }
-                AgentEvent::MemoryExtracted(payload) => {
-                    let trimmed = payload.trim();
-                    if !trimmed.is_empty() {
-                        let extracted = crate::services::memories::parse_memory_blocks(trimmed);
-                        let extracted = crate::services::memories::filter_extracted_blocks(extracted);
-                        if !extracted.contexts.is_empty() {
-                            match crate::services::memories::read_memories() {
-                                Ok(existing) => {
-                                    let current =
-                                        crate::services::memories::parse_memory_blocks(&existing);
-                                    let current_snapshot = current.to_string();
-                                    let merged = crate::services::memories::merge_memory_blocks(
-                                        current,
-                                        extracted,
-                                    );
-                                    let merged_snapshot = merged.to_string();
-                                    if merged_snapshot == current_snapshot {
-                                        return;
-                                    }
-                                    if let Err(error) =
-                                        crate::services::memories::write_memories(&merged)
-                                    {
-                                        self.add_system_message(&format!(
-                                            "Memories update error: {}",
-                                            error
-                                        ));
-                                    } else {
-                                        self.show_status_toast("MEMORY SAVED");
-                                    }
-                                }
-                                Err(error) => {
-                                    self.add_system_message(&format!(
-                                        "Memories read error: {}",
-                                        error
-                                    ));
-                                }
-                            }
-                        }
+                        self.select_history_conversation(&conversation_id);
                     }
                 }
                 AgentEvent::SystemMessage(message) => {
                     self.is_loading = false;
                     self.is_searching = false;
+                    self.is_retrieving = false;
                     self.is_analyzing = false;
                     self.is_fetching_notes = false;
                     self.chat_history.push(ChatMessage {
@@ -171,6 +149,10 @@ impl App {
                     self.conversion_frame = 0;
                     self.last_conversion_tick = None;
                 }
+                AgentEvent::CacheObsidianNotes { query, notes } => {
+                    // Cache notes for follow-up questions
+                    self.cached_obsidian_notes = Some((query, notes));
+                }
             }
         }
     }
@@ -191,5 +173,82 @@ impl App {
             tts.speak_text(response)?;
         }
         Ok(())
+    }
+
+    fn persist_conversation_messages(&mut self) -> Result<()> {
+        if !self.ensure_storage() {
+            return Err(color_eyre::eyre::eyre!("Storage not initialized"));
+        }
+        let agent_name = self
+            .current_agent
+            .as_ref()
+            .map_or("unknown", |agent| agent.name.as_str());
+        let messages = self.build_conversation_messages();
+
+        let new_conversation_id = {
+            let Some(storage) = &self.storage else {
+                return Err(color_eyre::eyre::eyre!("Storage not initialized"));
+            };
+            let Some(runtime) = self.storage_runtime() else {
+                return Err(color_eyre::eyre::eyre!("Storage runtime not initialized"));
+            };
+
+            let mut new_conversation_id: Option<String> = None;
+            let conversation_id =
+                if let Some(conversation_id) = self.current_conversation_id.clone() {
+                    let conversation_id_clone = conversation_id.clone();
+                    runtime.block_on(async {
+                        storage.update_conversation_messages(&conversation_id_clone, &messages).await
+                    })?;
+                    conversation_id
+                } else {
+                    let data = ConversationData::new(agent_name, &messages);
+                    let conversation_id = runtime.block_on(async {
+                        storage.save_conversation(data).await
+                    })?;
+                    new_conversation_id = Some(conversation_id.clone());
+                    conversation_id
+                };
+
+            let _ = self.save_messages_with_embeddings(
+                runtime,
+                storage,
+                &conversation_id,
+                &messages,
+            );
+            new_conversation_id
+        };
+
+        if let Some(conversation_id) = new_conversation_id {
+            self.current_conversation_id = Some(conversation_id);
+        }
+        Ok(())
+    }
+
+    fn save_messages_with_embeddings(
+        &self,
+        runtime: &tokio::runtime::Runtime,
+        storage: &crate::storage::StorageManager,
+        conversation_id: &str,
+        messages: &[ConversationMessage],
+    ) -> Result<()> {
+        runtime.block_on(async {
+            for message in messages {
+                let embedding = crate::services::retrieval::generate_message_embedding(&message.content)
+                    .await
+                    .ok()
+                    .flatten();
+                let update = crate::storage::MessageEmbeddingUpdate {
+                    conversation_id,
+                    role: &message.role,
+                    content: &message.content,
+                    timestamp: &message.timestamp,
+                    display_name: message.display_name.as_deref(),
+                    embedding,
+                };
+                let _ = storage.update_message_embedding(update).await;
+            }
+            Ok(())
+        })
     }
 }

@@ -1,0 +1,11 @@
+[package]
+name = "debug-db"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }
+surrealdb = { version = "2", features = ["kv-rocksdb"] }
+serde = { version = "1.0", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde_json = "1.0"

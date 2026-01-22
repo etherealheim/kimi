@@ -61,8 +61,7 @@ fn render_chat_header(f: &mut Frame, app: &App, area: Rect) {
     let model_name = app
         .current_agent
         .as_ref()
-        .map(|agent| agent.model.as_str())
-        .unwrap_or("");
+        .map_or("", |agent| agent.model.as_str());
 
     let border_block = Block::default()
         .borders(Borders::ALL)
@@ -214,19 +213,19 @@ fn render_regular_message(
             Style::default().fg(Color::DarkGray),
         ),
     ];
-    if message.role == MessageRole::Assistant {
-        if let Some(usage) = &message.context_usage {
-            let usage_text = format!(
-                "  {}n | {}h | {}m",
-                usage.notes_used, usage.history_used, usage.memories_used
-            );
-            header_spans.push(Span::styled(usage_text, Style::default().fg(Color::DarkGray)));
-        }
+    if message.role == MessageRole::Assistant
+        && let Some(usage) = &message.context_usage
+    {
+        let usage_text = format!(
+            "  {}n | {}h | {}m",
+            usage.notes_used, usage.history_used, usage.memories_used
+        );
+        header_spans.push(Span::styled(usage_text, Style::default().fg(Color::DarkGray)));
     }
     message_lines.push(Line::from(header_spans));
 
     // Message content with proper indentation
-    let max_empty_lines = if message.role == MessageRole::Assistant { 1 } else { 1 };
+    let max_empty_lines = 1;
     let wrapped_content = wrap_text(&message.content, max_content_width, max_empty_lines);
     for content_line in wrapped_content {
         message_lines.push(Line::from(vec![
@@ -246,7 +245,8 @@ fn add_loading_indicator(
     suffix: Option<String>,
 ) {
     let dots_frames = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
-    let dots = dots_frames[(frame as usize) % dots_frames.len()].to_string();
+    let frame_index = (frame as usize) % dots_frames.len();
+    let dots = dots_frames.get(frame_index).copied().unwrap_or("⣷").to_string();
     let assistant_name = if app.personality_enabled {
         app.personality_name.as_deref().unwrap_or("Kimi")
     } else {
@@ -378,6 +378,8 @@ fn render_chat_history(frame: &mut Frame, app: &App, area: Rect) {
             "analyzing"
         } else if app.is_searching {
             "searching"
+        } else if app.is_retrieving {
+            "retrieving"
         } else if app.is_fetching_notes {
             "fetching"
         } else {
@@ -468,7 +470,9 @@ fn wrap_text_impl(text: &str, max_width: usize) -> Vec<String> {
         let mut last_space: Option<usize> = None;
 
         while index < characters.len() {
-            let character = characters[index];
+            let Some(&character) = characters.get(index) else {
+                break;
+            };
             let char_width = UnicodeWidthChar::width(character).unwrap_or(0).max(1);
 
             if character.is_whitespace() {
@@ -477,10 +481,15 @@ fn wrap_text_impl(text: &str, max_width: usize) -> Vec<String> {
 
             if width + char_width > max_width && width > 0 {
                 let end = last_space.filter(|space| *space > start).unwrap_or(index);
-                let line: String = characters[start..end].iter().collect();
+                let line: String = characters
+                    .get(start..end)
+                    .map(|slice| slice.iter().collect())
+                    .unwrap_or_default();
                 lines.push(line.trim_end().to_string());
 
-                start = if end < characters.len() && characters[end].is_whitespace() {
+                start = if end < characters.len()
+                    && characters.get(end).is_some_and(|c| c.is_whitespace())
+                {
                     end + 1
                 } else {
                     end
@@ -496,7 +505,10 @@ fn wrap_text_impl(text: &str, max_width: usize) -> Vec<String> {
         }
 
         if start < characters.len() {
-            let line: String = characters[start..].iter().collect();
+            let line: String = characters
+                .get(start..)
+                .map(|slice| slice.iter().collect())
+                .unwrap_or_default();
             lines.push(line.trim_end().to_string());
         }
     }
@@ -504,10 +516,10 @@ fn wrap_text_impl(text: &str, max_width: usize) -> Vec<String> {
 }
 
 fn trim_empty_edges(lines: &mut Vec<String>) {
-    while lines.first().map_or(false, |line| line.is_empty()) {
+    while lines.first().is_some_and(String::is_empty) {
         lines.remove(0);
     }
-    while lines.last().map_or(false, |line| line.is_empty()) {
+    while lines.last().is_some_and(String::is_empty) {
         lines.pop();
     }
 }
@@ -541,7 +553,7 @@ fn display_width(text: &str) -> usize {
 fn add_spacing(lines: &mut Vec<Line>, count: usize) {
     let mut remaining = count;
     while remaining > 0 {
-        if lines.last().map_or(true, |line| !line.to_string().is_empty()) {
+        if lines.last().is_none_or(|line| !line.to_string().is_empty()) {
             lines.push(Line::from(""));
         }
         remaining -= 1;
@@ -554,6 +566,8 @@ fn render_chat_input(frame: &mut Frame, app: &App, area: Rect) {
             "Analyzing..."
         } else if app.is_searching {
             "Searching..."
+        } else if app.is_retrieving {
+            "Retrieving..."
         } else {
             "Waiting for response..."
         }
@@ -586,9 +600,7 @@ fn render_chat_footer(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let toast_message = app.status_toast_message();
-    let toast_width = toast_message
-        .map(|message| message.chars().count() as u16 + 4)
-        .unwrap_or(0);
+    let toast_width = toast_message.map_or(0, |message| message.chars().count() as u16 + 4);
 
     let left_width = inner
         .width

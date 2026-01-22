@@ -4,12 +4,16 @@ use color_eyre::Result;
 
 impl App {
     pub fn open_history(&mut self) {
+        let _ = self.ensure_storage();
         self.mode = AppMode::History;
         self.history_selected_index = 0;
         self.history_filter.clear();
         self.history_filter_active = false;
         self.history_delete_all_active = false;
         self.load_history_list();
+        if let Some(conversation_id) = self.current_conversation_id.clone() {
+            self.select_history_conversation(&conversation_id);
+        }
         // Stop TTS when opening history
         if let Some(tts) = &self.tts_service {
             tts.stop();
@@ -30,25 +34,45 @@ impl App {
     }
 
     pub(crate) fn load_history_list(&mut self) {
-        if let Some(storage) = &self.storage {
-            self.history_conversations = if self.history_filter.is_empty() {
-                storage.load_conversations().unwrap_or_default()
-            } else {
-                storage
-                    .filter_conversations(self.history_filter.content())
-                    .unwrap_or_default()
-            };
-        }
+        self.ensure_storage();
+        let Some(storage) = &self.storage else {
+            return;
+        };
+        let Some(runtime) = self.storage_runtime() else {
+            return;
+        };
+        self.history_conversations = if self.history_filter.is_empty() {
+            runtime
+                .block_on(async {
+                    storage.load_conversations().await.ok()
+                })
+                .unwrap_or_default()
+        } else {
+            runtime
+                .block_on(async {
+                    storage.filter_conversations(self.history_filter.content()).await.ok()
+                })
+                .unwrap_or_default()
+        };
         if self.history_selected_index >= self.history_conversations.len() {
             self.history_selected_index = self.history_conversations.len().saturating_sub(1);
         }
     }
 
-    pub fn select_history_conversation(&mut self, conversation_id: i64) {
+    pub fn select_history_conversation(&mut self, conversation_id: &str) {
         if let Some(index) = self
             .history_conversations
             .iter()
             .position(|conv| conv.id == conversation_id)
+        {
+            self.history_selected_index = index;
+            return;
+        }
+        let normalized = normalize_conversation_id(conversation_id);
+        if let Some(index) = self
+            .history_conversations
+            .iter()
+            .position(|conv| normalize_conversation_id(&conv.id) == normalized)
         {
             self.history_selected_index = index;
         }
@@ -59,14 +83,20 @@ impl App {
             .history_conversations
             .get(self.history_selected_index)
             .ok_or_else(|| color_eyre::eyre::eyre!("Invalid conversation selection"))?;
-        let conv_id = conv.id;
+        let conv_id = conv.id.clone();
         let agent_name = conv.agent_name.clone();
 
         let storage = self
             .storage
             .as_ref()
             .ok_or_else(|| color_eyre::eyre::eyre!("Storage not initialized"))?;
-        let (_agent_name, messages) = storage.load_conversation(conv_id)?;
+        
+        let runtime = self
+            .storage_runtime()
+            .ok_or_else(|| color_eyre::eyre::eyre!("Storage runtime not initialized"))?;
+        let (_agent_name, messages) = runtime.block_on(async {
+            storage.load_conversation(&conv_id).await
+        })?;
 
         self.load_agent(&agent_name)?;
 
@@ -101,12 +131,19 @@ impl App {
             .history_conversations
             .get(self.history_selected_index)
             .ok_or_else(|| color_eyre::eyre::eyre!("Invalid conversation selection"))?;
-        let conv_id = conv.id;
+        let conv_id = conv.id.clone();
         let storage = self
             .storage
             .as_ref()
             .ok_or_else(|| color_eyre::eyre::eyre!("Storage not initialized"))?;
-        storage.delete_conversation(conv_id)?;
+        
+        let runtime = self
+            .storage_runtime()
+            .ok_or_else(|| color_eyre::eyre::eyre!("Storage runtime not initialized"))?;
+        runtime.block_on(async {
+            storage.delete_conversation(&conv_id).await
+        })?;
+        
         self.load_history_list();
         if self.history_selected_index >= self.history_conversations.len()
             && self.history_selected_index > 0
@@ -139,7 +176,14 @@ impl App {
             .storage
             .as_ref()
             .ok_or_else(|| color_eyre::eyre::eyre!("Storage not initialized"))?;
-        storage.delete_all_conversations()?;
+        
+        let runtime = self
+            .storage_runtime()
+            .ok_or_else(|| color_eyre::eyre::eyre!("Storage runtime not initialized"))?;
+        runtime.block_on(async {
+            storage.delete_all_conversations().await
+        })?;
+        
         self.history_conversations.clear();
         self.history_selected_index = 0;
         self.history_delete_all_active = false;
@@ -164,6 +208,10 @@ impl App {
         self.history_filter.remove_char();
         self.load_history_list();
     }
+}
+
+fn normalize_conversation_id(value: &str) -> &str {
+    value.strip_prefix("conversation:").unwrap_or(value)
 }
 
 // Navigation for history items

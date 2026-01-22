@@ -216,8 +216,7 @@ fn tick_loading_animation(app: &mut App) {
     let now = Instant::now();
     let should_tick = app
         .last_loading_tick
-        .map(|last_tick| now.duration_since(last_tick) >= Duration::from_millis(200))
-        .unwrap_or(true);
+        .is_none_or(|last_tick| now.duration_since(last_tick) >= Duration::from_millis(200));
 
     if should_tick {
         app.loading_frame = app.loading_frame.wrapping_add(1);
@@ -236,8 +235,7 @@ fn tick_download_animation(app: &mut App) {
     let now = Instant::now();
     let should_tick = app
         .last_download_tick
-        .map(|last_tick| now.duration_since(last_tick) >= Duration::from_millis(200))
-        .unwrap_or(true);
+        .is_none_or(|last_tick| now.duration_since(last_tick) >= Duration::from_millis(200));
 
     if should_tick {
         app.download_frame = app.download_frame.wrapping_add(1);
@@ -256,8 +254,7 @@ fn tick_conversion_animation(app: &mut App) {
     let now = Instant::now();
     let should_tick = app
         .last_conversion_tick
-        .map(|last_tick| now.duration_since(last_tick) >= Duration::from_millis(200))
-        .unwrap_or(true);
+        .is_none_or(|last_tick| now.duration_since(last_tick) >= Duration::from_millis(200));
 
     if should_tick {
         app.conversion_frame = app.conversion_frame.wrapping_add(1);
@@ -276,8 +273,7 @@ fn tick_summary_animation(app: &mut App) {
     let now = Instant::now();
     let should_tick = app
         .last_summary_tick
-        .map(|last_tick| now.duration_since(last_tick) >= Duration::from_millis(200))
-        .unwrap_or(true);
+        .is_none_or(|last_tick| now.duration_since(last_tick) >= Duration::from_millis(200));
 
     if should_tick {
         app.summary_frame = app.summary_frame.wrapping_add(1);
@@ -557,7 +553,7 @@ fn handle_mouse_event(app: &mut App, mouse: event::MouseEvent) -> Result<()> {
 }
 
 fn handle_paste(app: &mut App, paste: &str) -> Result<()> {
-    let text = paste.replace('\n', "").replace('\r', "");
+    let text = paste.replace(['\n', '\r'], "");
     if text.is_empty() {
         return Ok(());
     }

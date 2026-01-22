@@ -49,11 +49,14 @@ pub enum AgentEvent {
     },
     Error(String),
     SummaryGenerated(String),
-    MemoryExtracted(String),
     SystemMessage(String),
     DownloadFinished,
     DownloadProgress(u8),
     ConversionFinished,
+    CacheObsidianNotes {
+        query: String,
+        notes: Vec<crate::services::obsidian::NoteSnippet>,
+    },
 }
 
 /// Main application state
@@ -76,6 +79,7 @@ pub struct App {
     pub current_agent: Option<Agent>,
     pub is_loading: bool,
     pub is_searching: bool,
+    pub is_retrieving: bool,
     pub is_analyzing: bool,
     pub is_fetching_notes: bool,
     pub last_response: Option<String>,
@@ -86,6 +90,7 @@ pub struct App {
     pub auto_tts_enabled: bool,
     pub chat_scroll_offset: usize,
     pub chat_auto_scroll: bool, // Whether to auto-scroll to bottom on new messages
+    pub cached_obsidian_notes: Option<(String, Vec<crate::services::obsidian::NoteSnippet>)>, // (query, notes) for follow-up questions
 
     // Model selection fields
     pub available_models: HashMap<String, Vec<AvailableModel>>,
@@ -117,8 +122,9 @@ pub struct App {
     pub history_delete_all_active: bool,
     pub history_delete_all_confirm_delete: bool,
     pub storage: Option<StorageManager>,
+    pub storage_runtime: Option<tokio::runtime::Runtime>,
     pub is_generating_summary: bool,
-    pub current_conversation_id: Option<i64>,
+    pub current_conversation_id: Option<String>,
     pub status_toast: Option<StatusToast>,
     pub clipboard_service: ClipboardService,
     pub personality_enabled: bool,
@@ -152,9 +158,7 @@ fn menu_item(name: &str, description: &str) -> MenuItem {
 }
 
 fn parse_model_command(command: &str) -> Option<(String, String)> {
-    let mut parts = command.splitn(2, ':');
-    let agent_name = parts.next()?;
-    let model_name = parts.next()?;
+    let (agent_name, model_name) = command.split_once(':')?;
     if !matches!(agent_name, "translate" | "chat") {
         return None;
     }
@@ -208,6 +212,7 @@ impl App {
             current_agent: None, // Will be set in init_services
             is_loading: false,
             is_searching: false,
+            is_retrieving: false,
             is_analyzing: false,
             is_fetching_notes: false,
             last_response: None,
@@ -248,6 +253,7 @@ impl App {
             history_delete_all_active: false,
             history_delete_all_confirm_delete: false,
             storage: None,
+            storage_runtime: None,
             is_generating_summary: false,
             current_conversation_id: None,
             status_toast: None,
@@ -267,6 +273,7 @@ impl App {
             summary_active: false,
             summary_frame: 0,
             last_summary_tick: None,
+            cached_obsidian_notes: None,
         }
     }
 
@@ -275,10 +282,10 @@ impl App {
         let mut agent_config = config.clone();
         if let Ok(base_personality) = crate::services::personality::read_base_personality() {
             let trimmed = base_personality.trim();
-            if !trimmed.is_empty() {
-                if let Some(chat_config) = agent_config.agents.get_mut("chat") {
-                    chat_config.system_prompt = trimmed.to_string();
-                }
+            if !trimmed.is_empty()
+                && let Some(chat_config) = agent_config.agents.get_mut("chat")
+            {
+                chat_config.system_prompt = trimmed.to_string();
             }
         }
         self.agent_manager = Some(AgentManager::new(&agent_config));
@@ -299,8 +306,8 @@ impl App {
             config.elevenlabs.voice_id.clone(),
             config.elevenlabs.model.clone(),
         ));
-        self.storage = StorageManager::new().ok();
-        let _ = crate::services::memories::ensure_memories();
+        
+        let _ = self.ensure_storage();
 
         let (tx, rx) = channel();
         self.agent_tx = Some(tx);
@@ -377,6 +384,34 @@ impl App {
         Ok(())
     }
 
+    pub(crate) fn ensure_storage_runtime(&mut self) -> bool {
+        if self.storage_runtime.is_some() {
+            return true;
+        }
+        self.storage_runtime = tokio::runtime::Runtime::new().ok();
+        self.storage_runtime.is_some()
+    }
+
+    pub(crate) fn storage_runtime(&self) -> Option<&tokio::runtime::Runtime> {
+        self.storage_runtime.as_ref()
+    }
+
+    pub(crate) fn ensure_storage(&mut self) -> bool {
+        if self.storage.is_some() {
+            return true;
+        }
+        if !self.ensure_storage_runtime() {
+            return false;
+        }
+        let Some(runtime) = self.storage_runtime() else {
+            return false;
+        };
+        self.storage = runtime.block_on(async {
+            StorageManager::new().await.ok()
+        });
+        self.storage.is_some()
+    }
+
     fn rebuild_menu_items(&mut self) {
         self.menu_items = base_menu_items();
     }
@@ -389,8 +424,7 @@ impl App {
         let should_clear = self
             .status_toast
             .as_ref()
-            .map(|toast| toast.is_expired(Duration::from_secs(3)))
-            .unwrap_or(false);
+            .is_some_and(|toast| toast.is_expired(Duration::from_secs(3)));
         if should_clear {
             self.status_toast = None;
         }

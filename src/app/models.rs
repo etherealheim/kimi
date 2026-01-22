@@ -38,15 +38,15 @@ impl App {
                         });
                     }
                 }
-                if agent_name == "chat" {
-                    if let Some(gab_models) = &gab_models {
-                        for model_name in gab_models {
-                            models.push(crate::app::AvailableModel {
-                                name: model_name.clone(),
-                                source: ModelSource::GabAI,
-                                is_available: true,
-                            });
-                        }
+                if agent_name == "chat"
+                    && let Some(gab_models) = &gab_models
+                {
+                    for model_name in gab_models {
+                        models.push(crate::app::AvailableModel {
+                            name: model_name.clone(),
+                            source: ModelSource::GabAI,
+                            is_available: true,
+                        });
                     }
                 }
             }
@@ -67,13 +67,12 @@ impl App {
             let has_available = self
                 .available_models
                 .get(agent_name)
-                .map_or(false, |models| !models.is_empty());
+                .is_some_and(|models| !models.is_empty());
 
             let should_reload = self
                 .current_agent
                 .as_ref()
-                .map(|agent| agent.name == agent_name)
-                .unwrap_or(false);
+                .is_some_and(|agent| agent.name == agent_name);
 
             if has_available {
                 let first_available = self
@@ -83,14 +82,11 @@ impl App {
                     .map(|model| model.name.clone());
 
                 let selected_name = selected.first().cloned();
-                let is_selected_available = selected_name
-                    .as_ref()
-                    .map(|name| {
-                        self.available_models
-                            .get(agent_name)
-                            .map_or(false, |models| models.iter().any(|m| m.name == *name))
-                    })
-                    .unwrap_or(false);
+                let is_selected_available = selected_name.as_ref().is_some_and(|name| {
+                    self.available_models
+                        .get(agent_name)
+                        .is_some_and(|models| models.iter().any(|m| m.name == *name))
+                });
 
                 if !is_selected_available {
                     selected.clear();
@@ -101,12 +97,10 @@ impl App {
                         reload_agent_name = Some(agent_name.to_string());
                     }
                 }
-            } else {
-                if !selected.is_empty() {
-                    selected.clear();
-                    if should_reload {
-                        reload_agent_name = Some(agent_name.to_string());
-                    }
+            } else if !selected.is_empty() {
+                selected.clear();
+                if should_reload {
+                    reload_agent_name = Some(agent_name.to_string());
                 }
             }
         }
@@ -136,8 +130,7 @@ impl App {
         let should_reload = self
             .current_agent
             .as_ref()
-            .map(|agent| agent.name == agent_name)
-            .unwrap_or(false);
+            .is_some_and(|agent| agent.name == agent_name);
 
         let selected = self
             .selected_models
@@ -195,8 +188,7 @@ impl App {
             let should_reload = self
                 .current_agent
                 .as_ref()
-                .map(|agent| agent.name == agent_name)
-                .unwrap_or(false);
+                .is_some_and(|agent| agent.name == agent_name);
             let selected = self
                 .selected_models
                 .entry(agent_name.clone())
@@ -204,10 +196,10 @@ impl App {
 
             if let Some(pos) = selected.iter().position(|x| x == &model_name) {
                 selected.remove(pos);
-                if should_reload && selected.is_empty() {
-                    if let Err(error) = self.load_agent(&agent_name) {
-                        self.add_system_message(&format!("Failed to reload agent: {}", error));
-                    }
+                if should_reload && selected.is_empty()
+                    && let Err(error) = self.load_agent(&agent_name)
+                {
+                    self.add_system_message(&format!("Failed to reload agent: {}", error));
                 }
             } else {
                 selected.clear();
@@ -216,10 +208,10 @@ impl App {
                 if let Some(selected_name) = selected_name {
                     let _ = self.persist_selected_model(&agent_name, &selected_name);
                 }
-                if should_reload {
-                    if let Err(error) = self.load_agent(&agent_name) {
-                        self.add_system_message(&format!("Failed to reload agent: {}", error));
-                    }
+                if should_reload
+                    && let Err(error) = self.load_agent(&agent_name)
+                {
+                    self.add_system_message(&format!("Failed to reload agent: {}", error));
                 }
             }
         }
