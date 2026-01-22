@@ -18,6 +18,10 @@
 <Sassy the Sasquatch | tags=character,name | source=explicit | confidence=high>
 <livin' the good life | tags=lifestyle,preference | source=explicit | confidence=high>
 <refreshments | tags=activity,preference | source=explicit | confidence=high>
+<TITANIC – The Artifact Exhibition | tags=exhibition,event,artifact | source=explicit | confidence=high>
+<Echoes of Tomorrow | tags=exhibition,event | source=explicit | confidence=high>
+<Body worlds – Výstava tělo v pohybu | tags=exhibition,event,bodyworlds | source=explicit | confidence=high>
+<Operation Anthropoid | tags=history,event,assassination,Reinhard Heydrich | source=explicit | confidence=high>
 
 [context:dislikes]
 <hazy memory | context=general | source=explicit | confidence=high>
@@ -28,7 +32,7 @@ asking for personal information
 []
 
 [context:location]
-<Prague | context=general | source=explicit | confidence=high>
+<Prague | tags=city,location,travel | source=explicit | confidence=high>
 <Mac | context=general | source=explicit | confidence=high>
 <Prague | context=location | source=explicit | confidence=high>
 <2026-W04, January 19th - 25th | context=date | source=explicit | confidence=high>
@@ -40,6 +44,7 @@ asking for personal information
 <unknown | context=general | source=implicit | confidence=low>
 <CET | context=general | source=explicit | confidence=high>
 []
+<January 22, 2026 | tags=date,time | source=explicit | confidence=high>
 
 [context:tools]
 <Dog Breed Finder | context=general | source=explicit | confidence=high>
@@ -117,3 +122,5 @@ this week note
 <Arch Linux | context=specific | source=explicit | confidence=high>
 <reminiscing | tags=social,memory | source=explicit | confidence=high>
 <Australian slang | tags=language,culture | source=explicit | confidence=high>
+<TITANIC – The Artifact Exhibition | tags=exhibition,event | source=explicit | confidence=high>
+<Echoes of Tomorrow | tags=exhibition,event | source=explicit | confidence=high>

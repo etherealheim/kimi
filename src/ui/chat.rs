@@ -11,23 +11,6 @@ use super::components;
 
 use crate::app::{App, MessageRole};
 
-const KIMI_ASCII_ART: &str = r"###@@@@@@@#####S%?**++++++++;++*???*???%###@%?%###
-##@@@@@@@######SS%%?**+++**?%????****???S##S?*?#@S
-#@@@@@@@@#######S%%%??*+***??%%%%%?***??%S%%*?#@#?
-#@@@@@@@@@######S%%???+;++*%??%%%%*++**?%%?%?#@@S?
-#@@@@@@@@@######S??*??+;+++****+++++++*?%??%S###%?
-#@@@@@@@@#######%???%?;+++;;+++++;++**?%%%S####S%*
-##@@@@@@@@#####S%??%%*++++++++++++***??S#######%%*
-###@@#@@@@####S%???S%+;+*+*+++++++***?%#######S%%+
-####@#@@@@@###%%???%%?****+++++++***??S###@##S%%%;
-######@@#@@###S%%%%??***+++;++++***??S##@####S%%%;
-##########@#@@#S%%SS%%??????******?%S########S%%%+
-S###########@@@@#%SS%???????***??%S####@######S%%*
-SSS##########@@@@#S%????**++**?%S###@@#######SS%?*
-SSSS##########@@@@#S?****+**??%S###########S???***
-SS############@@@@@@##SS%????%S####%S####%%?**+++*
-S##############@@@@@@@#S%???%SSS####S##S?%?*++++++";
-
 /// Primary chat view with header, messages, input, and footer
 pub fn render_chat_view(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -165,26 +148,14 @@ impl MessageStyles {
 
 /// Adds welcome message lines when chat is empty
 fn add_welcome_message(lines: &mut Vec<Line>, max_width: usize) {
-    let art_style = Style::default().fg(Color::Magenta);
     let welcome_style = Style::default().fg(Color::DarkGray);
     
-    // Add ASCII art
-    lines.push(Line::from(""));
-    for art_line in KIMI_ASCII_ART.lines() {
-        let art_width = art_line.len();
-        let padding = if max_width > art_width {
-            (max_width - art_width) / 2
-        } else {
-            1
-        };
-        
-        lines.push(Line::from(vec![
-            Span::raw(" ".repeat(padding)),
-            Span::styled(art_line, art_style),
-        ]));
+    // Add space for image (will be rendered separately)
+    for _ in 0..18 {
+        lines.push(Line::from(""));
     }
     
-    // Add welcome text
+    // Add welcome text below image
     lines.push(Line::from(""));
     let greeting = "Hi! I'm Kimi, your helpful companion.";
     let wrapped = wrap_text(greeting, max_width, 1);
