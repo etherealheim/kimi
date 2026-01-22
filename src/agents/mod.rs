@@ -22,6 +22,8 @@ pub struct AgentManager {
     agents: HashMap<String, Agent>,
     ollama_client: Arc<OllamaClient>,
     venice_api_key: Option<String>,
+    gab_api_key: Option<String>,
+    gab_base_url: String,
 }
 
 impl AgentManager {
@@ -47,6 +49,12 @@ impl AgentManager {
             agents,
             ollama_client,
             venice_api_key: None,
+            gab_api_key: if config.gab.api_key.trim().is_empty() {
+                None
+            } else {
+                Some(config.gab.api_key.clone())
+            },
+            gab_base_url: config.gab.base_url.clone(),
         }
     }
 
@@ -68,6 +76,14 @@ impl AgentManager {
                 .ok_or_else(|| color_eyre::eyre::eyre!("Venice API key not configured"))?;
             let _ = api_key;
             return Ok("Venice API ready".to_string());
+        }
+        if agent.model_source == ModelSource::GabAI {
+            let api_key = self
+                .gab_api_key
+                .as_ref()
+                .ok_or_else(|| color_eyre::eyre::eyre!("Gab AI key not configured"))?;
+            let _ = api_key;
+            return Ok("Gab AI ready".to_string());
         }
 
         // Check if Ollama is running
@@ -106,6 +122,13 @@ impl AgentManager {
                     .ok_or_else(|| color_eyre::eyre::eyre!("Venice API key not configured"))?;
                 crate::services::venice::chat(api_key, &agent.model, messages)
             }
+            ModelSource::GabAI => {
+                let api_key = self
+                    .gab_api_key
+                    .as_ref()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("Gab AI key not configured"))?;
+                crate::services::gab_ai::chat(api_key, &self.gab_base_url, &agent.model, messages)
+            }
         }
     }
 
@@ -115,6 +138,14 @@ impl AgentManager {
 
     pub fn set_venice_api_key(&mut self, api_key: String) {
         self.venice_api_key = Some(api_key);
+    }
+
+    pub fn set_gab_api_key(&mut self, api_key: String) {
+        if api_key.trim().is_empty() {
+            self.gab_api_key = None;
+        } else {
+            self.gab_api_key = Some(api_key);
+        }
     }
 }
 

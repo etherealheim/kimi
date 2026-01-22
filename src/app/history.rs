@@ -21,7 +21,6 @@ impl App {
         self.chat_history.clear();
         self.chat_input.clear();
         self.current_conversation_id = None;
-        self.personality_enabled = false;
         self.personality_text = None;
         if let Some(agent) = &self.current_agent {
             let agent_name = agent.name.clone();

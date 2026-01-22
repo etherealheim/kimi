@@ -13,6 +13,8 @@ pub struct Config {
     #[serde(default)]
     pub venice: VeniceConfig,
     #[serde(default)]
+    pub gab: GabConfig,
+    #[serde(default)]
     pub brave: BraveConfig,
     #[serde(default)]
     pub obsidian: ObsidianConfig,
@@ -25,6 +27,7 @@ pub struct Config {
 struct LocalConfig {
     elevenlabs: Option<LocalElevenLabsConfig>,
     venice: Option<LocalApiConfig>,
+    gab: Option<LocalApiConfig>,
     brave: Option<LocalApiConfig>,
     obsidian: Option<LocalObsidianConfig>,
 }
@@ -64,6 +67,13 @@ pub struct VeniceConfig {
     pub api_key: String,
 }
 
+/// Gab AI configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GabConfig {
+    pub api_key: String,
+    pub base_url: String,
+}
+
 /// Brave Search configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BraveConfig {
@@ -93,10 +103,9 @@ impl Default for Config {
     fn default() -> Self {
         let mut agents = HashMap::new();
 
-        // PERSONALITY: Kimi is helpful, concise, and friendly
-        // Edit this system prompt to change Kimi's personality across all agents
-        let kimi_personality = "You are Kimi, a helpful AI assistant. Be concise, friendly, and direct. \
-            Keep responses short and to the point unless asked for details.";
+        // PERSONALITY: Base prompt is loaded from data/personalities/Kimi.md
+        let kimi_personality =
+            "Kimi base prompt is loaded from data/personalities/Kimi.md.";
 
         agents.insert(
             "translate".to_string(),
@@ -128,6 +137,10 @@ impl Default for Config {
             },
             venice: VeniceConfig {
                 api_key: String::new(),
+            },
+            gab: GabConfig {
+                api_key: String::new(),
+                base_url: crate::services::gab_ai::default_base_url(),
             },
             brave: BraveConfig {
                 api_key: String::new(),
@@ -230,6 +243,13 @@ impl Config {
                 }
             }
         }
+        if let Some(gab) = &local.gab {
+            if let Some(api_key) = &gab.api_key {
+                if !api_key.trim().is_empty() {
+                    config.gab.api_key = api_key.clone();
+                }
+            }
+        }
         if let Some(obsidian) = &local.obsidian {
             if let Some(vault_path) = &obsidian.vault_path {
                 if !vault_path.trim().is_empty() {
@@ -243,6 +263,7 @@ impl Config {
         let mut redacted = self.clone();
         redacted.elevenlabs.api_key = String::new();
         redacted.venice.api_key = String::new();
+        redacted.gab.api_key = String::new();
         redacted.brave.api_key = String::new();
         redacted
     }

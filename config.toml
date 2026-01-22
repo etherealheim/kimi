@@ -9,6 +9,10 @@ model = "eleven_turbo_v2_5"
 [venice]
 api_key = ""
 
+[gab]
+api_key = ""
+base_url = "https://api.gab.ai/v1"
+
 [brave]
 api_key = ""
 
@@ -16,12 +20,12 @@ api_key = ""
 vault_path = "/home/ethereal/Documents/e-vault/"
 
 [personality]
-selected = "sassy"
-
-[agents.chat]
-model = "gemma3:12b"
-system_prompt = "You are a helpful assistant."
+selected = "Casca"
 
 [agents.translate]
 model = "translategemma:latest"
 system_prompt = "You are a translation assistant. Translate text between languages clearly and accurately."
+
+[agents.chat]
+model = "Arya"
+system_prompt = "Kimi base prompt is loaded from data/personalities/Kimi.md."

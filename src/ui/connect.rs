@@ -58,6 +58,9 @@ pub fn render_connect_providers(f: &mut Frame, app: &App) {
                 "Venice AI" if !app.connect_venice_key.is_empty() => {
                     ("configured", Style::default().fg(Color::Green), "●")
                 }
+                "Gab AI" if !app.connect_gab_key.is_empty() => {
+                    ("configured", Style::default().fg(Color::Green), "●")
+                }
                 "Brave Search" if !app.connect_brave_key.is_empty() => {
                     ("configured", Style::default().fg(Color::Green), "●")
                 }
@@ -75,7 +78,7 @@ pub fn render_connect_providers(f: &mut Frame, app: &App) {
                     };
                     (status_text, status_style, "●")
                 }
-                "ElevenLabs" | "Venice AI" | "Brave Search" => {
+                "ElevenLabs" | "Venice AI" | "Gab AI" | "Brave Search" => {
                     ("not configured", Style::default().fg(Color::DarkGray), "○")
                 }
                 "Obsidian" => ("not configured", Style::default().fg(Color::DarkGray), "○"),
@@ -220,6 +223,31 @@ pub fn render_api_key_input(f: &mut Frame, app: &App) {
             ]),
         ],
         "Venice AI" => vec![Line::from("")],
+        "Gab AI" => vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  ● ", Style::default().fg(Color::Green)),
+                Span::styled(
+                    "Gab AI",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    " - Arya model access",
+                    Style::default().fg(Color::White),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("    Get your key: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "https://gab.ai",
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::UNDERLINED),
+                ),
+            ]),
+        ],
         "Brave Search" => vec![
             Line::from(""),
             Line::from(vec![

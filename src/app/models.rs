@@ -21,6 +21,7 @@ impl App {
 
         let installed_models = manager.list_models()?;
         let venice_models = fetch_venice_models(&self.connect_venice_key);
+        let gab_models = fetch_gab_models(&self.connect_gab_key);
 
         let mut available_models: HashMap<String, Vec<crate::app::AvailableModel>> =
             HashMap::new();
@@ -34,6 +35,17 @@ impl App {
                         source: ModelSource::VeniceAPI,
                         is_available: true,
                     });
+                }
+            }
+            if agent_name == "chat" {
+                if let Some(gab_models) = &gab_models {
+                    for model_name in gab_models {
+                        models.push(crate::app::AvailableModel {
+                            name: model_name.clone(),
+                            source: ModelSource::GabAI,
+                            is_available: true,
+                        });
+                    }
                 }
             }
             available_models.insert(agent_name.to_string(), models);
@@ -212,28 +224,18 @@ impl App {
     }
 }
 
-fn allowed_models_for_agent(agent_name: &str) -> Vec<&'static str> {
-    match agent_name {
-        "translate" => vec!["gemma3:12b", "translategemma:latest", "gemma2:2b"],
-        "chat" => vec!["gemma3:12b", "gemma2:2b", "llama2"],
-        _ => Vec::new(),
-    }
-}
-
 fn build_ollama_models(
     agent_name: &str,
     installed_models: &[String],
 ) -> Vec<crate::app::AvailableModel> {
-    let allowed = allowed_models_for_agent(agent_name);
     let mut models = Vec::new();
-    for model_name in allowed {
-        if is_model_installed(installed_models, model_name) {
-            models.push(crate::app::AvailableModel {
-                name: model_name.to_string(),
-                source: ModelSource::Ollama,
-                is_available: true,
-            });
-        }
+    let _ = agent_name;
+    for model_name in installed_models {
+        models.push(crate::app::AvailableModel {
+            name: model_name.to_string(),
+            source: ModelSource::Ollama,
+            is_available: true,
+        });
     }
     models
 }
@@ -242,30 +244,24 @@ fn fetch_venice_models(api_key: &str) -> Option<Vec<String>> {
     if api_key.trim().is_empty() {
         return None;
     }
-    crate::services::venice::fetch_text_models(api_key).ok()
+    let allowed = ["venice-uncensored", "kimi-k2-thinking", "grok-fast"];
+    crate::services::venice::fetch_text_models(api_key)
+        .ok()
+        .map(|models| {
+            models
+                .into_iter()
+                .filter(|model| allowed.iter().any(|allowed| model == allowed))
+                .collect()
+        })
 }
 
-fn is_model_installed(installed_models: &[String], requested: &str) -> bool {
-    installed_models
-        .iter()
-        .any(|installed| model_name_matches(installed, requested))
-}
-
-fn model_name_matches(available: &str, requested: &str) -> bool {
-    if available == requested || available.starts_with(&format!("{requested}:")) {
-        return true;
+fn fetch_gab_models(api_key: &str) -> Option<Vec<String>> {
+    if api_key.trim().is_empty() {
+        return None;
     }
-
-    let requested_base = requested.split(':').next().unwrap_or(requested);
-    let available_base = available.split(':').next().unwrap_or(available);
-    if available_base == requested_base {
-        return true;
-    }
-
-    let requested_last = requested_base.rsplit('/').next().unwrap_or(requested_base);
-    let available_last = available_base.rsplit('/').next().unwrap_or(available_base);
-    requested_last == available_last
+    Some(vec!["Arya".to_string()])
 }
+
 
 // Navigation for model selection
 pub struct ModelSelectionNavigable<'a> {

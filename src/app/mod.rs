@@ -43,7 +43,10 @@ pub enum AppMode {
 
 /// Events from the agent processing thread
 pub enum AgentEvent {
-    Response(String),
+    ResponseWithContext {
+        response: String,
+        context_usage: Option<ContextUsage>,
+    },
     Error(String),
     SummaryGenerated(String),
     MemoryExtracted(String),
@@ -74,8 +77,6 @@ pub struct App {
     pub is_loading: bool,
     pub is_searching: bool,
     pub is_analyzing: bool,
-    pub pending_search_notice: Option<String>,
-    pub pending_context_usage: Option<ContextUsage>,
     pub last_response: Option<String>,
     pub agent_manager: Option<AgentManager>,
     pub tts_service: Option<TTSService>,
@@ -94,6 +95,7 @@ pub struct App {
     // Connect fields
     pub connect_elevenlabs_key: String,
     pub connect_venice_key: String,
+    pub connect_gab_key: String,
     pub connect_brave_key: String,
     pub connect_obsidian_vault: String,
     pub connect_providers: Vec<String>,
@@ -205,8 +207,6 @@ impl App {
             is_loading: false,
             is_searching: false,
             is_analyzing: false,
-            pending_search_notice: None,
-            pending_context_usage: None,
             last_response: None,
             agent_manager: None,
             tts_service: None,
@@ -221,11 +221,13 @@ impl App {
             model_selection_items: Vec::new(),
             connect_elevenlabs_key: String::new(),
             connect_venice_key: String::new(),
+            connect_gab_key: String::new(),
             connect_brave_key: String::new(),
             connect_obsidian_vault: String::new(),
             connect_providers: vec![
                 "ElevenLabs".to_string(),
                 "Venice AI".to_string(),
+                "Gab AI".to_string(),
                 "Brave Search".to_string(),
                 "Obsidian".to_string(),
             ],
@@ -267,13 +269,26 @@ impl App {
 
     /// Initializes services (agent manager, TTS, storage) with configuration
     pub fn init_services(&mut self, config: &Config) {
-        self.agent_manager = Some(AgentManager::new(config));
+        let mut agent_config = config.clone();
+        if let Ok(base_personality) = crate::services::personality::read_base_personality() {
+            let trimmed = base_personality.trim();
+            if !trimmed.is_empty() {
+                if let Some(chat_config) = agent_config.agents.get_mut("chat") {
+                    chat_config.system_prompt = trimmed.to_string();
+                }
+            }
+        }
+        self.agent_manager = Some(AgentManager::new(&agent_config));
         self.connect_venice_key = config.venice.api_key.clone();
+        self.connect_gab_key = config.gab.api_key.clone();
         self.connect_brave_key = config.brave.api_key.clone();
         self.connect_obsidian_vault = config.obsidian.vault_path.clone();
         if let Some(manager) = &mut self.agent_manager {
             if !self.connect_venice_key.is_empty() {
                 manager.set_venice_api_key(self.connect_venice_key.clone());
+            }
+            if !self.connect_gab_key.is_empty() {
+                manager.set_gab_api_key(self.connect_gab_key.clone());
             }
         }
         self.tts_service = Some(TTSService::new(

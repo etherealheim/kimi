@@ -142,161 +142,15 @@ impl App {
         Ok((agent, manager, agent_tx))
     }
 
-    /// Converts chat history to agent messages format
-    pub(crate) fn build_agent_messages(&mut self, system_prompt: &str) -> ChatBuildResult {
-        self.pending_context_usage = None;
-        if self.personality_enabled && self.personality_text.is_none() {
-            let selected_name = self
-                .personality_name
-                .clone()
-                .unwrap_or_else(crate::services::personality::default_personality_name);
-            if let Ok(text) = crate::services::personality::read_personality(&selected_name) {
-                if !text.trim().is_empty() {
-                    self.personality_text = Some(text);
-                }
-            }
-            self.personality_name = Some(selected_name);
-        }
 
-        let mut prompt_lines = vec![system_prompt.to_string()];
-        let now = chrono::Local::now();
-        prompt_lines.push(format!(
-            "Current date and time: {}",
-            now.format("%Y-%m-%d %H:%M:%S")
-        ));
-        prompt_lines.push("Respond in plain text. Do not use Markdown formatting.".to_string());
-        prompt_lines.push("Respond in English unless the user asks otherwise.".to_string());
-        if let Ok(profile_text) = crate::services::personality::read_my_personality() {
-            let blocks = parse_user_context_blocks(&profile_text);
-            let query = self
-                .last_user_message_content()
-                .unwrap_or_default()
-                .to_lowercase();
-            for block in blocks {
-                match block.kind {
-                    UserContextKind::Always => {
-                        if !block.content.is_empty() {
-                            prompt_lines.push(format!(
-                                "User context (always):\n{}",
-                                block.content
-                            ));
-                        }
-                    }
-                    UserContextKind::Context { tag } => {
-                        if !block.content.is_empty()
-                            && should_include_user_context(&query, &tag, &block.content)
-                        {
-                            prompt_lines.push(format!(
-                                "User context ({}):\n{}",
-                                tag, block.content
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-        let mut context_usage = ContextUsage {
-            notes_used: 0,
-            history_used: 0,
-            memories_used: 0,
-        };
-        let mut query_tokens: Vec<String> = Vec::new();
-        if let Some(query) = self.last_user_message_content() {
-            query_tokens = tokenize_query(&query);
-            if let Ok(summary_entries) =
-                build_conversation_summary_entries(self.storage.as_ref(), &query)
-            {
-                if !summary_entries.is_empty() {
-                    context_usage.history_used =
-                        count_summary_matches(&summary_entries, &query_tokens);
-                    prompt_lines.push("--- Conversation summaries ---".to_string());
-                    prompt_lines.push(format_summary_entries(&summary_entries));
-                    prompt_lines.push(
-                        "Use the summaries above to answer recap questions. If they are insufficient, ask a clarifying question."
-                            .to_string(),
-                    );
-                }
-            }
-        }
-        if let Ok(memories) = crate::services::memories::read_memories() {
-            let trimmed = memories.trim();
-            if !trimmed.is_empty() {
-                let blocks = crate::services::memories::parse_memory_blocks(trimmed);
-                if let Some(query) = self.last_user_message_content() {
-                    if let Some(memory_context) = build_memory_context(&blocks, &query) {
-                        context_usage.memories_used = memory_context.count;
-                        prompt_lines.push("--- Memories ---".to_string());
-                        prompt_lines.push(memory_context.content);
-                        prompt_lines.push(
-                            "Use the memories above as persistent user facts. Prefer matching context tags and ignore low-confidence items unless confirmed."
-                                .to_string(),
-                        );
-                    }
-                }
-            }
-        }
-        if let Some(query) = self.last_user_message_content() {
-            if let Ok(Some(obsidian_context)) = obsidian::build_obsidian_context(
-                &self.connect_obsidian_vault,
-                &query,
-                &query_tokens,
-            ) {
-                context_usage.notes_used = obsidian_context.count;
-                prompt_lines.push(
-                    "Use the Obsidian notes below to answer questions about the user's notes."
-                        .to_string(),
-                );
-                prompt_lines.push(
-                    "Do not add or infer information that is not explicitly present in the notes."
-                        .to_string(),
-                );
-                prompt_lines.push(obsidian_context.content);
-            }
-        }
-        let has_context_usage = context_usage.notes_used > 0
-            || context_usage.history_used > 0
-            || context_usage.memories_used > 0;
-        if has_context_usage {
-            self.pending_context_usage = Some(context_usage);
-        }
-        if let Some(query) = self.last_user_message_content() {
-            search::enrich_prompt_with_search(self, &mut prompt_lines, &query);
-        }
-        let has_search_context = prompt_lines
-            .iter()
-            .any(|line| line.starts_with("Brave search results for"));
-        if self.personality_enabled {
-            if let Some(text) = &self.personality_text {
-                if !text.trim().is_empty() {
-                    prompt_lines.push(text.trim().to_string());
-                }
-            }
-        }
-        let merged_prompt = prompt_lines.join("\n\n");
-        let system_context = merged_prompt.clone();
-        let mut messages = vec![AgentChatMessage::system(merged_prompt)];
-        for chat_message in &self.chat_history {
-            if chat_message.role == MessageRole::User {
-                messages.push(AgentChatMessage::user(&chat_message.content));
-            } else if chat_message.role == MessageRole::Assistant {
-                messages.push(AgentChatMessage::assistant(&chat_message.content));
-            }
-        }
-        ChatBuildResult {
-            messages,
-            system_context,
-            should_verify: has_context_usage || has_search_context,
-        }
-    }
-
-    /// Spawns a background thread to process the agent chat request
-    pub(crate) fn spawn_agent_chat_thread(
+    pub(crate) fn spawn_agent_chat_thread_with_context(
         agent: crate::agents::Agent,
         manager: crate::agents::AgentManager,
         messages: Vec<AgentChatMessage>,
         system_context: String,
         should_verify: bool,
         agent_tx: std::sync::mpsc::Sender<AgentEvent>,
+        context_usage: Option<ContextUsage>,
     ) {
         std::thread::spawn(move || {
             match manager.chat(&agent, &messages) {
@@ -309,13 +163,23 @@ impl App {
                             verification::build_verification_messages(&system_context, &response);
                         if let Ok(verified) = manager.chat(&agent, &verify_messages) {
                             if !verified.trim().is_empty() {
-                                return agent_tx.send(AgentEvent::Response(verified));
+                                let context_usage_for_verify = context_usage.clone();
+                                let _ = agent_tx.send(AgentEvent::ResponseWithContext {
+                                    response: verified,
+                                    context_usage: context_usage_for_verify,
+                                });
+                                return;
                             }
                         }
                     }
-                    agent_tx.send(AgentEvent::Response(response))
+                    let _ = agent_tx.send(AgentEvent::ResponseWithContext {
+                        response,
+                        context_usage,
+                    });
                 }
-                Err(error) => agent_tx.send(AgentEvent::Error(error.to_string())),
+                Err(error) => {
+                    let _ = agent_tx.send(AgentEvent::Error(error.to_string()));
+                }
             }
         });
     }
@@ -330,10 +194,185 @@ impl App {
 
 }
 
-pub(crate) struct ChatBuildResult {
+pub(crate) struct ChatBuildSnapshot {
+    pub system_prompt: String,
+    pub chat_history: Vec<ChatMessage>,
+    pub personality_enabled: bool,
+    pub personality_text: Option<String>,
+    pub personality_name: Option<String>,
+    pub connect_obsidian_vault: String,
+    pub connect_brave_key: String,
+}
+
+pub(crate) struct ChatBuildResultWithUsage {
     pub messages: Vec<AgentChatMessage>,
     pub system_context: String,
     pub should_verify: bool,
+    pub context_usage: Option<ContextUsage>,
+    pub pending_search_notice: Option<String>,
+}
+
+pub(crate) fn build_agent_messages_from_snapshot(
+    snapshot: ChatBuildSnapshot,
+    agent: &crate::agents::Agent,
+    manager: &crate::agents::AgentManager,
+) -> ChatBuildResultWithUsage {
+    let mut personality_text = snapshot.personality_text.clone();
+    if snapshot.personality_enabled && personality_text.is_none() {
+        let selected_name = snapshot
+            .personality_name
+            .clone()
+            .unwrap_or_else(crate::services::personality::default_personality_name);
+        if let Ok(text) = crate::services::personality::read_personality(&selected_name) {
+            if !text.trim().is_empty() {
+                personality_text = Some(text);
+            }
+        }
+    }
+
+    let last_user_message = snapshot
+        .chat_history
+        .iter()
+        .rev()
+        .find(|message| message.role == MessageRole::User)
+        .map(|message| message.content.clone());
+
+    let mut prompt_lines = vec![snapshot.system_prompt.to_string()];
+    let now = chrono::Local::now();
+    prompt_lines.push(format!(
+        "Current date and time: {}",
+        now.format("%Y-%m-%d %H:%M:%S")
+    ));
+    prompt_lines.push("Respond in plain text. Do not use Markdown formatting.".to_string());
+    prompt_lines.push("Respond in English unless the user asks otherwise.".to_string());
+    if let Ok(profile_text) = crate::services::personality::read_my_personality() {
+        let blocks = parse_user_context_blocks(&profile_text);
+        let query = last_user_message.clone().unwrap_or_default().to_lowercase();
+        for block in blocks {
+            match block.kind {
+                UserContextKind::Always => {
+                    if !block.content.is_empty() {
+                        prompt_lines.push(format!("User context (always):\n{}", block.content));
+                    }
+                }
+                UserContextKind::Context { tag } => {
+                    if !block.content.is_empty()
+                        && should_include_user_context(&query, &tag, &block.content)
+                    {
+                        prompt_lines.push(format!("User context ({}):\n{}", tag, block.content));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut context_usage = ContextUsage {
+        notes_used: 0,
+        history_used: 0,
+        memories_used: 0,
+    };
+    let mut query_tokens: Vec<String> = Vec::new();
+    let storage = crate::storage::StorageManager::new().ok();
+    if let Some(query) = last_user_message.clone() {
+        query_tokens = tokenize_query(&query);
+        if let Ok(summary_entries) = build_conversation_summary_entries(storage.as_ref(), &query) {
+            if !summary_entries.is_empty() {
+                context_usage.history_used =
+                    count_summary_matches(&summary_entries, &query_tokens);
+                prompt_lines.push("--- Conversation summaries ---".to_string());
+                prompt_lines.push(format_summary_entries(&summary_entries));
+                prompt_lines.push(
+                    "Use the summaries above to answer recap questions. If they are insufficient, ask a clarifying question."
+                        .to_string(),
+                );
+            }
+        }
+    }
+    if let Ok(memories) = crate::services::memories::read_memories() {
+        let trimmed = memories.trim();
+        if !trimmed.is_empty() {
+            let blocks = crate::services::memories::parse_memory_blocks(trimmed);
+            if let Some(query) = last_user_message.clone() {
+                if let Some(memory_context) = build_memory_context(&blocks, &query) {
+                    context_usage.memories_used = memory_context.count;
+                    prompt_lines.push("--- Memories ---".to_string());
+                    prompt_lines.push(memory_context.content);
+                    prompt_lines.push(
+                        "Use the memories above as persistent user facts. Prefer matching context tags and ignore low-confidence items unless confirmed."
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+    if let Some(query) = last_user_message.clone() {
+        if let Ok(Some(obsidian_context)) = obsidian::build_obsidian_context(
+            &snapshot.connect_obsidian_vault,
+            &query,
+            &query_tokens,
+        ) {
+            context_usage.notes_used = obsidian_context.count;
+            prompt_lines.push(
+                "Use the Obsidian notes below to answer questions about the user's notes."
+                    .to_string(),
+            );
+            prompt_lines.push(
+                "Do not add or infer information that is not explicitly present in the notes."
+                    .to_string(),
+            );
+            prompt_lines.push(obsidian_context.content);
+        }
+    }
+    let has_context_usage = context_usage.notes_used > 0
+        || context_usage.history_used > 0
+        || context_usage.memories_used > 0;
+
+    let mut pending_search_notice: Option<String> = None;
+    if let Some(query) = last_user_message.clone() {
+        let search_context = search::SearchContext::new(
+            agent.clone(),
+            manager.clone(),
+            snapshot.connect_brave_key.clone(),
+        );
+        pending_search_notice = search::enrich_prompt_with_search_snapshot(
+            &search_context,
+            &mut prompt_lines,
+            &query,
+        );
+    }
+
+    let has_search_context = prompt_lines
+        .iter()
+        .any(|line| line.starts_with("Brave search results for"));
+    if snapshot.personality_enabled {
+        if let Some(text) = &personality_text {
+            if !text.trim().is_empty() {
+                prompt_lines.push(text.trim().to_string());
+            }
+        }
+    }
+    let merged_prompt = prompt_lines.join("\n\n");
+    let system_context = merged_prompt.clone();
+    let mut messages = vec![AgentChatMessage::system(merged_prompt)];
+    for chat_message in &snapshot.chat_history {
+        if chat_message.role == MessageRole::User {
+            messages.push(AgentChatMessage::user(&chat_message.content));
+        } else if chat_message.role == MessageRole::Assistant {
+            messages.push(AgentChatMessage::assistant(&chat_message.content));
+        }
+    }
+
+    ChatBuildResultWithUsage {
+        messages,
+        system_context,
+        should_verify: has_context_usage || has_search_context,
+        context_usage: if has_context_usage {
+            Some(context_usage)
+        } else {
+            None
+        },
+        pending_search_notice,
+    }
 }
 
 

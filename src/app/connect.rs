@@ -18,6 +18,7 @@ impl App {
         if let Ok(config) = Config::load() {
             self.connect_elevenlabs_key = config.elevenlabs.api_key.clone();
             self.connect_venice_key = config.venice.api_key.clone();
+            self.connect_gab_key = config.gab.api_key.clone();
             self.connect_brave_key = config.brave.api_key.clone();
             self.connect_obsidian_vault = config.obsidian.vault_path.clone();
         }
@@ -36,6 +37,10 @@ impl App {
                 "Venice AI" => {
                     self.connect_api_key_input
                         .set_content(self.connect_venice_key.clone());
+                }
+                "Gab AI" => {
+                    self.connect_api_key_input
+                        .set_content(self.connect_gab_key.clone());
                 }
                 "Brave Search" => {
                     self.connect_api_key_input
@@ -104,6 +109,18 @@ impl App {
                             context_usage: None,
                         });
                     }
+                }
+                "Gab AI" => {
+                    self.connect_gab_key = self.connect_api_key_input.content().to_string();
+                    if let Ok(mut config) = Config::load() {
+                        config.gab.api_key = self.connect_gab_key.clone();
+                        let _ = config.save();
+                    }
+                    if let Some(manager) = &mut self.agent_manager {
+                        manager.set_gab_api_key(self.connect_gab_key.clone());
+                    }
+                    let _ = self.refresh_available_models();
+                    did_save = true;
                 }
                 "Brave Search" => {
                     self.connect_brave_key = self.connect_api_key_input.content().to_string();

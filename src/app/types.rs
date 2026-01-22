@@ -11,6 +11,7 @@ pub struct AvailableModel {
 pub enum ModelSource {
     Ollama,
     VeniceAPI,
+    GabAI,
 }
 
 /// Item in the model selection UI

@@ -2,6 +2,11 @@ use crate::app::{App, AppMode, Navigable, TextInput};
 use crate::config::Config;
 use color_eyre::Result;
 
+const BASE_PERSONALITY_INDEX: usize = 0;
+const MY_PERSONALITY_INDEX: usize = 1;
+const MEMORIES_INDEX: usize = 2;
+const PERSONALITY_ITEMS_OFFSET: usize = 3;
+
 impl App {
     pub fn open_personality_menu(&mut self) -> Result<()> {
         self.mode = AppMode::PersonalitySelection;
@@ -44,21 +49,36 @@ impl App {
     }
 
     pub fn edit_selected_personality(&mut self) -> Result<()> {
-        if self.personality_selected_index == 1 {
+        if self.personality_selected_index == BASE_PERSONALITY_INDEX {
+            if let Err(error) =
+                crate::services::personality::open_base_personality_in_new_terminal()
+            {
+                crate::services::personality::open_base_personality_in_place()?;
+                self.add_system_message(&format!("Base personality editor error: {}", error));
+            }
+            return Ok(());
+        }
+        if self.personality_selected_index == MY_PERSONALITY_INDEX {
+            if let Err(error) =
+                crate::services::personality::open_my_personality_in_new_terminal()
+            {
+                crate::services::personality::open_my_personality_in_place()?;
+                self.add_system_message(&format!("My personality editor error: {}", error));
+            }
+            return Ok(());
+        }
+        if self.personality_selected_index == MEMORIES_INDEX {
             if let Err(error) = crate::services::memories::open_memories_in_new_terminal() {
                 crate::services::memories::open_memories_in_place()?;
                 self.add_system_message(&format!("Memories editor error: {}", error));
             }
             return Ok(());
         }
-        let name = if self.personality_selected_index == 0 {
-            crate::services::personality::my_personality_name()
-        } else {
-            self.personality_items
-                .get(self.personality_selected_index.saturating_sub(2))
-                .cloned()
-                .unwrap_or_else(crate::services::personality::default_personality_name)
-        };
+        let name = self
+            .personality_items
+            .get(self.personality_selected_index.saturating_sub(PERSONALITY_ITEMS_OFFSET))
+            .cloned()
+            .unwrap_or_else(crate::services::personality::default_personality_name);
         if let Err(error) = crate::services::personality::open_personality_in_new_terminal(&name) {
             crate::services::personality::open_personality_in_place(&name)?;
             self.add_system_message(&format!("Personality editor error: {}", error));
@@ -67,7 +87,7 @@ impl App {
     }
 
     pub fn delete_selected_personality(&mut self) -> Result<()> {
-        if self.personality_selected_index <= 1 {
+        if self.personality_selected_index <= MEMORIES_INDEX {
             self.add_system_message("This entry cannot be deleted");
             return Ok(());
         }
@@ -78,7 +98,7 @@ impl App {
 
         let name = self
             .personality_items
-            .get(self.personality_selected_index.saturating_sub(2))
+            .get(self.personality_selected_index.saturating_sub(PERSONALITY_ITEMS_OFFSET))
             .cloned()
             .unwrap_or_else(crate::services::personality::default_personality_name);
 
@@ -91,7 +111,7 @@ impl App {
             }
         }
 
-        let total_items = self.personality_items.len() + 2;
+        let total_items = self.personality_items.len() + PERSONALITY_ITEMS_OFFSET;
         if self.personality_selected_index >= total_items && self.personality_selected_index > 0 {
             self.personality_selected_index = total_items.saturating_sub(1);
         }
@@ -100,10 +120,13 @@ impl App {
     }
 
     pub fn select_personality(&mut self) -> Result<()> {
-        if self.personality_selected_index == 0 {
+        if self.personality_selected_index == BASE_PERSONALITY_INDEX {
+            return self.edit_selected_personality();
+        }
+        if self.personality_selected_index == MY_PERSONALITY_INDEX {
             return Ok(());
         }
-        if self.personality_selected_index == 1 {
+        if self.personality_selected_index == MEMORIES_INDEX {
             if let Err(error) = crate::services::memories::open_memories_in_new_terminal() {
                 crate::services::memories::open_memories_in_place()?;
                 self.add_system_message(&format!("Memories editor error: {}", error));
@@ -112,7 +135,7 @@ impl App {
         }
         if let Some(name) = self
             .personality_items
-            .get(self.personality_selected_index.saturating_sub(2))
+            .get(self.personality_selected_index.saturating_sub(PERSONALITY_ITEMS_OFFSET))
             .cloned()
         {
             self.set_active_personality(&name)?;
@@ -122,6 +145,7 @@ impl App {
 
     pub fn reload_personality_items(&mut self) -> Result<()> {
         let _ = crate::services::personality::ensure_my_personality();
+        let _ = crate::services::personality::ensure_base_personality();
         let mut items = crate::services::personality::list_personalities()?;
         items.sort();
         self.personality_items = items;
@@ -132,12 +156,16 @@ impl App {
                 .iter()
                 .position(|name| name == active)
             {
-                self.personality_selected_index = index + 2;
+                self.personality_selected_index = index + PERSONALITY_ITEMS_OFFSET;
                 return Ok(());
             }
         }
 
-        self.personality_selected_index = if self.personality_items.is_empty() { 0 } else { 2 };
+        self.personality_selected_index = if self.personality_items.is_empty() {
+            BASE_PERSONALITY_INDEX
+        } else {
+            PERSONALITY_ITEMS_OFFSET
+        };
         if let Some(first) = self.personality_items.first().cloned() {
             self.personality_name = Some(first);
         }
@@ -169,7 +197,7 @@ impl<'a> PersonalityNavigable<'a> {
 
 impl<'a> Navigable for PersonalityNavigable<'a> {
     fn get_item_count(&self) -> usize {
-        self.app.personality_items.len() + 2
+        self.app.personality_items.len() + PERSONALITY_ITEMS_OFFSET
     }
 
     fn get_selected_index(&self) -> usize {

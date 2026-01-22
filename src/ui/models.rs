@@ -115,6 +115,7 @@ fn render_model_list(f: &mut Frame, app: &App, area: Rect) {
                     let source_text = match model.source {
                         ModelSource::Ollama => "Ollama",
                         ModelSource::VeniceAPI => "Venice",
+                        ModelSource::GabAI => "Gab",
                     };
 
                     let source_style = if is_current {

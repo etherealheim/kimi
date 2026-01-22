@@ -10,7 +10,10 @@ impl App {
             && let Ok(event) = rx.try_recv()
         {
             match event {
-                AgentEvent::Response(response) => {
+                AgentEvent::ResponseWithContext {
+                    response,
+                    context_usage,
+                } => {
                     self.is_loading = false;
                     self.is_searching = false;
                     self.is_analyzing = false;
@@ -20,7 +23,6 @@ impl App {
                     } else {
                         None
                     };
-                    let context_usage = self.pending_context_usage.take();
                     self.chat_history.push(ChatMessage {
                         role: MessageRole::Assistant,
                         content: response.clone(),
@@ -29,7 +31,6 @@ impl App {
                         context_usage,
                     });
 
-                    // Auto-scroll to bottom if enabled
                     if self.chat_auto_scroll {
                         self.chat_scroll_offset = 0;
                     }
@@ -142,6 +143,9 @@ impl App {
                     }
                 }
                 AgentEvent::SystemMessage(message) => {
+                    self.is_loading = false;
+                    self.is_searching = false;
+                    self.is_analyzing = false;
                     self.chat_history.push(ChatMessage {
                         role: MessageRole::System,
                         content: message,

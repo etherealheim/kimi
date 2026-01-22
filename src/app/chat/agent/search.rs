@@ -1,5 +1,6 @@
 use crate::app::chat::agent::context::{is_personal_recap_query, is_week_note_query};
 use crate::app::chat::agent::obsidian::is_external_event_query;
+use crate::agents::{Agent, AgentManager};
 use serde::Deserialize;
 
 const SEARCH_DECISION_SYSTEM_PROMPT: &str = r#"You are a search routing assistant.
@@ -34,29 +35,44 @@ struct SearchDecisionPayload {
     query: Option<String>,
 }
 
-pub fn enrich_prompt_with_search(
-    app: &mut crate::app::App,
+pub struct SearchContext {
+    agent: Agent,
+    manager: AgentManager,
+    brave_key: String,
+}
+
+impl SearchContext {
+    pub fn new(agent: Agent, manager: AgentManager, brave_key: String) -> Self {
+        Self {
+            agent,
+            manager,
+            brave_key,
+        }
+    }
+}
+
+pub fn enrich_prompt_with_search_snapshot(
+    context: &SearchContext,
     prompt_lines: &mut Vec<String>,
     query: &str,
-) {
+) -> Option<String> {
     let lowered = query.to_lowercase();
     // Week note queries should never trigger web search
     if is_personal_recap_query(&lowered) || is_week_note_query(&lowered) {
-        return;
+        return None;
     }
     // Explicit note queries should rely on Obsidian, not web search
     if is_note_lookup_query(&lowered) {
-        return;
+        return None;
     }
     if is_external_event_query(&lowered) {
-        append_brave_search_results(app, prompt_lines, query);
-        return;
+        return append_brave_search_results_snapshot(context, prompt_lines, query);
     }
-    let decision = decide_search_decision(app, query);
+    let decision = decide_search_decision_snapshot(context, query);
     let action = decision.as_ref().map(|value| value.action);
     if action == Some(SearchDecisionAction::Clarify) {
         prompt_lines.push("Ask a brief clarifying question before answering.".to_string());
-        return;
+        return None;
     }
     let should_search = match action {
         Some(SearchDecisionAction::Search) => true,
@@ -64,38 +80,36 @@ pub fn enrich_prompt_with_search(
         None => should_use_brave_search(query),
     };
     if !should_search {
-        return;
+        return None;
     }
     let search_query = select_search_query(decision.as_ref(), query);
-    append_brave_search_results(app, prompt_lines, &search_query);
+    append_brave_search_results_snapshot(context, prompt_lines, &search_query)
 }
 
-fn decide_search_decision(app: &crate::app::App, query: &str) -> Option<SearchDecision> {
-    let agent = app.current_agent.as_ref()?;
-    let manager = app.agent_manager.as_ref()?;
+fn decide_search_decision_snapshot(
+    context: &SearchContext,
+    query: &str,
+) -> Option<SearchDecision> {
     let messages = build_search_decision_messages(query);
-    let response = manager.chat(agent, &messages).ok()?;
+    let response = context.manager.chat(&context.agent, &messages).ok()?;
     parse_search_decision(&response)
 }
 
-fn append_brave_search_results(
-    app: &mut crate::app::App,
+fn append_brave_search_results_snapshot(
+    context: &SearchContext,
     prompt_lines: &mut Vec<String>,
     query: &str,
-) {
-    if app.connect_brave_key.trim().is_empty() {
-        app.pending_search_notice = Some(
+) -> Option<String> {
+    if context.brave_key.trim().is_empty() {
+        return Some(
             "Live search is not configured. Add a Brave API key in config.local.toml."
                 .to_string(),
         );
-        return;
     }
-    match crate::services::brave::search(&app.connect_brave_key, query) {
+    match crate::services::brave::search(&context.brave_key, query) {
         Ok(results) => {
             if results.is_empty() {
-                app.pending_search_notice =
-                    Some("I couldn't find any live search results for that.".to_string());
-                return;
+                return Some("I couldn't find any live search results for that.".to_string());
             }
             prompt_lines.push(
                 "All temperatures must be in Celsius (metric units). Do not use Fahrenheit."
@@ -105,15 +119,16 @@ fn append_brave_search_results(
                 "Use only the search results below to answer. If they are missing or unclear, say you cannot find the up-to-date information."
                     .to_string(),
             );
-            prompt_lines.push("Use the Brave search results below to answer the user's request.".to_string());
+            prompt_lines.push(
+                "Use the Brave search results below to answer the user's request.".to_string(),
+            );
             prompt_lines.push(format!(
                 "Brave search results for \"{}\":\n{}",
                 query, results
             ));
+            None
         }
-        Err(error) => {
-            app.pending_search_notice = Some(format!("Live search failed: {}", error));
-        }
+        Err(error) => Some(format!("Live search failed: {}", error)),
     }
 }
 

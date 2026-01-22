@@ -59,35 +59,45 @@ impl App {
             return Ok(());
         }
 
-        self.pending_search_notice = None;
         self.is_loading = true;
         self.is_searching = self.should_mark_searching(&user_message);
         self.is_analyzing = !self.chat_attachments.is_empty();
 
         let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
-        let build_result = self.build_agent_messages(&agent.system_prompt);
-        let mut messages = build_result.messages;
-        if let Some(notice) = self.pending_search_notice.take() {
-            self.is_loading = false;
-            self.is_searching = false;
-            self.is_analyzing = false;
-            self.add_assistant_message(&notice);
-            return Ok(());
-        }
-        if !self.chat_attachments.is_empty() {
-            let images = self.build_attachment_images()?;
-            self.apply_images_to_last_user_message(&mut messages, images);
-            self.chat_attachments.clear();
-        }
+        let snapshot = crate::app::chat::agent::ChatBuildSnapshot {
+            system_prompt: agent.system_prompt.clone(),
+            chat_history: self.chat_history.clone(),
+            personality_enabled: self.personality_enabled,
+            personality_text: self.personality_text.clone(),
+            personality_name: self.personality_name.clone(),
+            connect_obsidian_vault: self.connect_obsidian_vault.clone(),
+            connect_brave_key: self.connect_brave_key.clone(),
+        };
+        let attachments = self.chat_attachments.clone();
+        self.chat_attachments.clear();
 
-        Self::spawn_agent_chat_thread(
-            agent,
-            manager,
-            messages,
-            build_result.system_context,
-            build_result.should_verify,
-            agent_tx,
-        );
+        std::thread::spawn(move || {
+            let build_result = crate::app::chat::agent::build_agent_messages_from_snapshot(
+                snapshot, &agent, &manager,
+            );
+            if let Some(notice) = build_result.pending_search_notice {
+                let _ = agent_tx.send(crate::app::AgentEvent::SystemMessage(notice));
+                return;
+            }
+            let mut messages = build_result.messages;
+            if let Ok(images) = build_attachment_images_from_attachments(&attachments) {
+                apply_images_to_last_user_message(&mut messages, images);
+            }
+            App::spawn_agent_chat_thread_with_context(
+                agent,
+                manager,
+                messages,
+                build_result.system_context,
+                build_result.should_verify,
+                agent_tx,
+                build_result.context_usage,
+            );
+        });
 
         Ok(())
     }
@@ -184,34 +194,6 @@ impl App {
             return false;
         }
         super::agent::should_use_brave_search(query)
-    }
-
-    fn build_attachment_images(&mut self) -> Result<Vec<String>> {
-        let mut images = Vec::new();
-        for attachment in &self.chat_attachments {
-            match attachment {
-                ChatAttachment::FilePath { path, .. } => {
-                    let bytes = std::fs::read(path)?;
-                    images.push(STANDARD.encode(bytes));
-                }
-                ChatAttachment::ClipboardImage { png_bytes, .. } => {
-                    images.push(STANDARD.encode(png_bytes));
-                }
-            }
-        }
-        Ok(images)
-    }
-
-    fn apply_images_to_last_user_message(
-        &self,
-        messages: &mut [crate::agents::ChatMessage],
-        images: Vec<String>,
-    ) {
-        if let Some(last) = messages.last_mut()
-            && last.role == crate::agents::MessageRole::User
-        {
-            last.images = images;
-        }
     }
 
     fn cleaned_chat_input_with_attachments(&mut self) -> String {
@@ -362,6 +344,33 @@ fn is_supported_image_path(path: &Path) -> bool {
         extension.to_lowercase().as_str(),
         "png" | "jpg" | "jpeg" | "webp" | "bmp" | "tiff" | "gif"
     )
+}
+
+fn build_attachment_images_from_attachments(attachments: &[ChatAttachment]) -> Result<Vec<String>> {
+    let mut images = Vec::new();
+    for attachment in attachments {
+        match attachment {
+            ChatAttachment::FilePath { path, .. } => {
+                let bytes = std::fs::read(path)?;
+                images.push(STANDARD.encode(bytes));
+            }
+            ChatAttachment::ClipboardImage { png_bytes, .. } => {
+                images.push(STANDARD.encode(png_bytes));
+            }
+        }
+    }
+    Ok(images)
+}
+
+fn apply_images_to_last_user_message(
+    messages: &mut [crate::agents::ChatMessage],
+    images: Vec<String>,
+) {
+    if let Some(last) = messages.last_mut()
+        && last.role == crate::agents::MessageRole::User
+    {
+        last.images = images;
+    }
 }
 
 fn make_attachment_token(label: &str) -> String {
