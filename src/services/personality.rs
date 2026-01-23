@@ -355,20 +355,27 @@ Behavior rules:
 }
 
 fn my_personality_template() -> String {
+    // Try to read from template file first
+    if let Ok(personality_dir) = personality_dir() {
+        let template_path = personality_dir.join("My personality.template.md");
+        if let Ok(template_content) = fs::read_to_string(template_path) {
+            return template_content;
+        }
+    }
+    
+    // Fallback to hardcoded template if file doesn't exist
     [
         "[always]",
-        "Name: Lukas",
-        "Location: Prague",
-        "Timezone: CET",
-        "Tone: direct, concise",
+        "Name: Your name",
+        "Location: Your location",
+        "Timezone: Your timezone",
         "",
-        "[context:games]",
-        "Plays: Elden Ring",
-        "Likes: soulslike games",
+        "[context:personal]",
+        "Add personal information here",
         "",
-        "[context:food]",
-        "Prefers: spicy",
-        "Allergy: none",
+        "[context:work]",
+        "Role: Your job title",
+        "Skills: Your skills",
     ]
     .join("\n")
 }

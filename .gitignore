@@ -3,4 +3,5 @@ config.local.toml
 temp/
 data/kimi.db/
 data/history.db
+data/personalities/My personality.md
 tools/**/target/
