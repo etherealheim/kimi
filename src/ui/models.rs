@@ -50,17 +50,17 @@ fn render_model_header(f: &mut Frame, area: Rect) {
 }
 
 fn render_model_list(f: &mut Frame, app: &App, area: Rect) {
-    let agent_order = ["translate", "chat", "routing"];
+    let agent_order = ["embeddings", "translate", "chat", "routing"];
     let mut items = vec![ListItem::new(Line::from(""))];
     let mut flat_index = 0;
     let mut selected_list_index: Option<usize> = None;
 
     for agent_name in agent_order {
         // Agent section header with better visual separation
-        let header_title = if agent_name == "routing" {
-            "FUNCTION CALLING".to_string()
-        } else {
-            agent_name.to_uppercase()
+        let header_title = match agent_name {
+            "routing" => "FUNCTION CALLING".to_string(),
+            "embeddings" => "EMBEDDINGS".to_string(),
+            _ => agent_name.to_uppercase(),
         };
         items.push(ListItem::new(Line::from(vec![
             Span::styled("  ", Style::default()),

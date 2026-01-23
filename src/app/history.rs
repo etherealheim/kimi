@@ -4,19 +4,23 @@ use color_eyre::Result;
 
 impl App {
     pub fn open_history(&mut self) {
-        let _ = self.ensure_storage();
+        // Change mode IMMEDIATELY for instant UI feedback
         self.mode = AppMode::History;
         self.history_selected_index = 0;
         self.history_filter.clear();
         self.history_filter_active = false;
         self.history_delete_all_active = false;
+        
+        // Stop TTS immediately when opening history
+        if let Some(tts) = &self.tts_service {
+            tts.stop();
+        }
+        
+        // Load data after mode change (this may block but UI already changed)
+        let _ = self.ensure_storage();
         self.load_history_list();
         if let Some(conversation_id) = self.current_conversation_id.clone() {
             self.select_history_conversation(&conversation_id);
-        }
-        // Stop TTS when opening history
-        if let Some(tts) = &self.tts_service {
-            tts.stop();
         }
     }
 

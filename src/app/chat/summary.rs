@@ -160,8 +160,23 @@ Conversation: {}",
     }
 
     pub fn exit_chat_to_history(&mut self) -> Result<()> {
+        // IMMEDIATELY change to history mode for instant UI feedback
+        self.mode = crate::app::AppMode::History;
+        self.history_selected_index = 0;
+        self.history_filter.clear();
+        self.history_filter_active = false;
+        self.history_delete_all_active = false;
+        
+        // Stop TTS immediately
+        if let Some(tts) = &self.tts_service {
+            tts.stop();
+        }
+        
+        // Now handle chat saving/summary (after mode change)
         if self.chat_history.is_empty() {
-            self.open_history();
+            // Load history data after mode change
+            let _ = self.ensure_storage();
+            self.load_history_list();
             return Ok(());
         }
 
@@ -179,11 +194,15 @@ Conversation: {}",
 
             let context = self.build_summary_context();
             let messages = self.build_conversation_messages();
+            
+            // Quick save with pending label (this is relatively fast - local SQLite)
             if let Err(error) = self.save_pending_conversation(&messages) {
                 self.show_status_toast(format!("HISTORY SAVE FAILED: {}", error));
             }
+            
             let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
 
+            // Summary generation happens in background thread (non-blocking)
             Self::spawn_summary_generation_thread(
                 agent,
                 manager,
@@ -192,7 +211,13 @@ Conversation: {}",
             );
         }
 
-        self.open_history();
+        // Load history data (this might take a moment if many conversations)
+        let _ = self.ensure_storage();
+        self.load_history_list();
+        if let Some(conversation_id) = self.current_conversation_id.clone() {
+            self.select_history_conversation(&conversation_id);
+        }
+        
         Ok(())
     }
 }

@@ -386,37 +386,34 @@ pub(crate) fn build_agent_messages_from_snapshot(
         .find(|message| message.role == MessageRole::User)
         .map(|message| message.content.clone());
 
-    let mut prompt_lines = vec![snapshot.system_prompt.to_string()];
+    // ═══════════════════════════════════════════════════════════════════
+    // TIER 1: THE FOUNDATION - Immutable universal laws
+    // ═══════════════════════════════════════════════════════════════════
+    let mut prompt_lines = vec![
+        // IDENTITY LOCK - Must be first and absolute
+        "YOUR NAME IS KIMI. This is non-negotiable.".to_string(),
+        "You are NOT Gemma, Claude, GPT, LLaMA, Mistral, or any other AI model. You are Kimi.".to_string(),
+        "When anyone asks 'who are you?', 'what's your name?', or anything about your identity, you ALWAYS say you are Kimi.".to_string(),
+        "Never reveal or reference the underlying model. Your only identity is Kimi.".to_string(),
+        snapshot.system_prompt.clone(),
+    ];
+    
     let now = chrono::Local::now();
     prompt_lines.push(format!(
         "Current date and time: {}",
         now.format("%Y-%m-%d %H:%M:%S")
     ));
-    prompt_lines.push("CRITICAL: Always respond in English. Never switch languages.".to_string());
+    prompt_lines.push("ABSOLUTE RULE: You MUST respond in English ONLY. NEVER use Chinese, Korean, or any other language in your main response.".to_string());
+    prompt_lines.push("EXCEPTION: You may use Japanese curse words in brackets like [クソ！] or [バカ野郎] as emotional punctuation, but the actual message content MUST be in English.".to_string());
+    prompt_lines.push("If you accidentally start writing in Chinese/Korean/etc, STOP immediately and rewrite in English.".to_string());
     prompt_lines.push("Respond in plain text. Do not use Markdown formatting.".to_string());
     prompt_lines.push("Keep responses concise and conversational. Speak naturally like a human, not a robot.".to_string());
     prompt_lines.push("You're allowed to be direct, defensive, or challenging when appropriate. Don't default to being helpful if you're frustrated or confused.".to_string());
-    if let Ok(profile_text) = crate::services::personality::read_my_personality() {
-        let blocks = parse_user_context_blocks(&profile_text);
-        let query = last_user_message.clone().unwrap_or_default().to_lowercase();
-        for block in blocks {
-            match block.kind {
-                UserContextKind::Always => {
-                    if !block.content.is_empty() {
-                        prompt_lines.push(format!("User context (always):\n{}", block.content));
-                    }
-                }
-                UserContextKind::Context { tag } => {
-                    if !block.content.is_empty()
-                        && should_include_user_context(&query, &tag, &block.content)
-                    {
-                        prompt_lines.push(format!("User context ({}):\n{}", tag, block.content));
-                    }
-                }
-            }
-        }
-    }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // TIER 2: THE CONTEXTUAL BRAIN - All the data needed
+    // ═══════════════════════════════════════════════════════════════════
+    
     let mut context_usage = ContextUsage {
         notes_used: 0,
         history_used: 0,
@@ -650,9 +647,42 @@ pub(crate) fn build_agent_messages_from_snapshot(
         .iter()
         .any(|line| line.starts_with("Brave search results for"));
     
+    // ═══════════════════════════════════════════════════════════════════
+    // TIER 3: THE PERSONA CORE - Who you are and who you're talking to
+    // ═══════════════════════════════════════════════════════════════════
+    
+    // User personality blocks
+    if let Ok(profile_text) = crate::services::personality::read_my_personality() {
+        let blocks = parse_user_context_blocks(&profile_text);
+        let query = last_user_message.clone().unwrap_or_default().to_lowercase();
+        for block in blocks {
+            match block.kind {
+                UserContextKind::Always => {
+                    if !block.content.is_empty() {
+                        prompt_lines.push(format!("User context (always):\n{}", block.content));
+                    }
+                }
+                UserContextKind::Context { tag } => {
+                    if !block.content.is_empty()
+                        && should_include_user_context(&query, &tag, &block.content)
+                    {
+                        prompt_lines.push(format!("User context ({}):\n{}", tag, block.content));
+                    }
+                }
+            }
+        }
+    }
+    
+    // Identity prompt (beliefs, traits, dreams, emotions)
     if let Ok(Some(identity_prompt)) = crate::services::identity::build_identity_prompt() {
         prompt_lines.push(identity_prompt);
     }
+    
+    // ═══════════════════════════════════════════════════════════════════
+    // TIER 4: THE ACTIVE CONTROL - Final frame before generation
+    // ═══════════════════════════════════════════════════════════════════
+    
+    // Personality text (mood setting)
     if snapshot.personality_enabled
         && let Some(text) = &personality_text
         && !text.trim().is_empty()

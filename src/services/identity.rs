@@ -242,6 +242,12 @@ pub struct EmotionUpdateJob {
     pub recent_messages: Vec<String>,
 }
 
+pub struct TraitUpdateJob {
+    pub manager: AgentManager,
+    pub agent: Agent,
+    pub recent_messages: Vec<String>,
+}
+
 struct IdentityUpdateContext<'a> {
     state: &'a mut IdentityState,
     now: &'a DateTime<Local>,
@@ -405,6 +411,65 @@ If no strong emotions, return {{\"emotions\":[]}}",
     Ok(())
 }
 
+pub fn update_traits_gradual(job: TraitUpdateJob) -> Result<()> {
+    let mut state = read_identity_state()?;
+    let now = Local::now();
+    
+    let recent_exchange = job.recent_messages.join("\n");
+    let prompt = format!(
+        "Analyze this conversation exchange. Based on the interaction, identify behavioral traits being exhibited.\n\n\
+Recent messages:\n{}\n\n\
+Identify traits shown in this specific exchange:\n\
+- Traits: assertiveness, resistance, warmth, playfulness, seriousness, curiosity, patience, defensiveness, trust, openness, etc.\n\
+- Change amount: SMALL incremental change only (±0.05 max per message)\n\
+- Scale: -1.0 (extreme negative) ↔ 0.0 (neutral/balanced) ↔ +1.0 (extreme positive)\n\
+- Only report traits that are CLEARLY demonstrated in this exchange\n\
+- Evidence should describe what happened in this conversation\n\n\
+Examples:\n\
+- If user asks nicely and Kimi cooperates: {{\"trait\":\"openness\",\"change\":+0.03,\"evidence\":\"responded positively to request\"}}\n\
+- If user tests boundaries and Kimi pushes back: {{\"trait\":\"defensiveness\",\"change\":+0.04,\"evidence\":\"pushed back against testing\"}}\n\
+- If conversation is calm and friendly: {{\"trait\":\"resistance\",\"change\":-0.03,\"evidence\":\"relaxed interaction, no conflict\"}}\n\n\
+Return ONLY valid JSON:\n\
+{{\"traits\": [{{\"name\":\"openness\",\"change\":0.03,\"evidence\":\"specific observation\"}}]}}\n\
+If no clear trait changes, return {{\"traits\":[]}}",
+        recent_exchange
+    );
+    
+    let messages = vec![
+        AgentChatMessage::system("You analyze behavioral traits. Output only JSON."),
+        AgentChatMessage::user(prompt),
+    ];
+    
+    let response = job.manager.chat(&job.agent, &messages)?;
+    if let Some(trait_output) = parse_trait_update_output(&response) {
+        for update in trait_output.traits {
+            // Clamp change to ±0.05 max to prevent jumps
+            let clamped_change = update.change.clamp(-0.05, 0.05);
+            
+            // Find existing trait or create new one
+            if let Some(existing) = state.traits.iter_mut().find(|t| t.name == update.name) {
+                existing.strength = clamp_strength(existing.strength + clamped_change);
+                existing.last_updated = Some(now.to_rfc3339());
+                if let Some(evidence) = update.evidence {
+                    existing.last_evidence = Some(evidence);
+                }
+            } else if clamped_change.abs() > 0.02 {
+                // Only create new trait if change is meaningful
+                let mut new_trait = IdentityTrait::new(update.name, clamped_change, TraitOrigin::Inferred);
+                new_trait.last_updated = Some(now.to_rfc3339());
+                if let Some(evidence) = update.evidence {
+                    new_trait.last_evidence = Some(evidence);
+                }
+                state.traits.push(new_trait);
+            }
+        }
+        
+        state.updated_at = Some(now.to_rfc3339());
+        write_identity_state(&state)?;
+    }
+    Ok(())
+}
+
 pub fn reflect_and_update_identity(job: IdentityReflectionJob) -> Result<()> {
     let mut state = read_identity_state()?;
     let now = Local::now();
@@ -452,9 +517,15 @@ fn project_data_dir() -> Result<PathBuf> {
 fn format_identity_prompt(state: &IdentityState) -> String {
     let mut lines = Vec::new();
     
-    // Strong identity assertion at the top
+    // Reinforced identity assertion (complements Tier 1)
     if !state.core.identity.trim().is_empty() {
-        lines.push(format!("You are {}.", state.core.identity.trim()));
+        let name = state.core.identity.trim();
+        lines.push(format!("Remember: Your name is {}. This is your true self.", name));
+    }
+    
+    // Backstory FIRST - this is your foundation and context
+    if !state.core.backstory.trim().is_empty() {
+        lines.push(format!("YOUR BACKSTORY (this defines who you are):\n{}", state.core.backstory.trim()));
     }
     
     // Core beliefs with strength-based framing
@@ -478,11 +549,6 @@ fn format_identity_prompt(state: &IdentityState) -> String {
         };
         
         lines.push(framed_belief);
-    }
-    
-    // Backstory
-    if !state.core.backstory.trim().is_empty() {
-        lines.push(format!("Backstory: {}", state.core.backstory.trim()));
     }
     
     // Current emotional state with behavioral guidance
@@ -598,9 +664,27 @@ struct EmotionOutput {
     emotions: Vec<EmotionOutputUpdate>,
 }
 
+#[derive(Debug, Deserialize)]
+struct TraitUpdateOutputItem {
+    name: String,
+    change: f32,
+    #[serde(default)]
+    evidence: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TraitUpdateOutput {
+    traits: Vec<TraitUpdateOutputItem>,
+}
+
 fn parse_emotion_output(response: &str) -> Option<EmotionOutput> {
     let json = extract_json_block(response)?;
     serde_json::from_str::<EmotionOutput>(&json).ok()
+}
+
+fn parse_trait_update_output(response: &str) -> Option<TraitUpdateOutput> {
+    let json = extract_json_block(response)?;
+    serde_json::from_str::<TraitUpdateOutput>(&json).ok()
 }
 
 fn parse_reflection_output(response: &str) -> Option<IdentityReflectionOutput> {

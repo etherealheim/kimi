@@ -6,7 +6,10 @@ use std::collections::HashMap;
 impl App {
     fn persist_selected_model(&self, agent_name: &str, model_name: &str) -> Result<()> {
         let mut config = crate::config::Config::load()?;
-        if let Some(agent_config) = config.agents.get_mut(agent_name) {
+        if agent_name == "embeddings" {
+            config.embeddings.model = model_name.to_string();
+            config.save()?;
+        } else if let Some(agent_config) = config.agents.get_mut(agent_name) {
             agent_config.model = model_name.to_string();
             config.save()?;
         }
@@ -25,10 +28,10 @@ impl App {
 
         let mut available_models: HashMap<String, Vec<crate::app::AvailableModel>> =
             HashMap::new();
-        let agent_order = ["translate", "chat", "routing"];
+        let agent_order = ["embeddings", "translate", "chat", "routing"];
         for agent_name in agent_order {
             let mut models = build_ollama_models(agent_name, &installed_models);
-            if agent_name != "routing" {
+            if agent_name != "routing" && agent_name != "embeddings" && agent_name != "translate" {
                 if let Some(venice_models) = &venice_models {
                     for model_name in venice_models {
                         models.push(crate::app::AvailableModel {
@@ -57,7 +60,7 @@ impl App {
         self.rebuild_menu_items();
 
         let mut reload_agent_name: Option<String> = None;
-        let agent_order = ["translate", "chat"];
+        let agent_order = ["embeddings", "translate", "chat"];
         for agent_name in agent_order {
             let selected = self
                 .selected_models
@@ -164,7 +167,7 @@ impl App {
         self.model_selection_items.clear();
 
         // Define agent order
-        let agent_order = vec!["translate", "chat", "routing"];
+        let agent_order = vec!["embeddings", "translate", "chat", "routing"];
 
         for agent_name in agent_order {
             if let Some(models) = self.available_models.get(agent_name) {
@@ -224,14 +227,35 @@ fn build_ollama_models(
 ) -> Vec<crate::app::AvailableModel> {
     let mut models = Vec::new();
     let is_routing_agent = agent_name == "routing";
+    let is_embeddings = agent_name == "embeddings";
+    let is_translate = agent_name == "translate";
+    
     for model_name in installed_models {
         let is_function_model = is_function_calling_model(model_name);
+        let is_embedding_model = is_embedding_model(model_name);
+        let is_translate_model = is_translate_model(model_name);
+        
+        // Routing agent: only function models
         if is_routing_agent && !is_function_model {
             continue;
         }
         if !is_routing_agent && is_function_model {
             continue;
         }
+        
+        // Embeddings: only embedding models
+        if is_embeddings && !is_embedding_model {
+            continue;
+        }
+        if !is_embeddings && is_embedding_model {
+            continue;
+        }
+        
+        // Translate: only translate models (translategemma)
+        if is_translate && !is_translate_model {
+            continue;
+        }
+        
         models.push(crate::app::AvailableModel {
             name: model_name.to_string(),
             source: ModelSource::Ollama,
@@ -245,15 +269,7 @@ fn fetch_venice_models(api_key: &str) -> Option<Vec<String>> {
     if api_key.trim().is_empty() {
         return None;
     }
-    let allowed = ["venice-uncensored", "kimi-k2-thinking", "grok-fast"];
-    crate::agents::venice::fetch_text_models(api_key)
-        .ok()
-        .map(|models| {
-            models
-                .into_iter()
-                .filter(|model| allowed.iter().any(|allowed| model == allowed))
-                .collect()
-        })
+    crate::agents::venice::fetch_text_models(api_key).ok()
 }
 
 fn fetch_gab_models(api_key: &str) -> Option<Vec<String>> {
@@ -266,6 +282,16 @@ fn fetch_gab_models(api_key: &str) -> Option<Vec<String>> {
 fn is_function_calling_model(model_name: &str) -> bool {
     let lowered = model_name.to_lowercase();
     lowered.contains("function")
+}
+
+fn is_embedding_model(model_name: &str) -> bool {
+    let lowered = model_name.to_lowercase();
+    lowered.contains("embed") || lowered.contains("bge")
+}
+
+fn is_translate_model(model_name: &str) -> bool {
+    let lowered = model_name.to_lowercase();
+    lowered.contains("translategemma") || lowered.contains("translate")
 }
 
 

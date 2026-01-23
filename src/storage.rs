@@ -486,6 +486,7 @@ impl StorageManager {
             created_at: String,
         }
 
+        // Load recent 100 conversations (optimized with limit)
         let mut response = self.db.query("
             SELECT 
                 id,
@@ -495,12 +496,14 @@ impl StorageManager {
                 created_at
             FROM conversation
             ORDER BY created_at DESC
+            LIMIT 100
         ").await?;
 
         let results: Vec<ConvRow> = response.take(0)?;
 
         let mut summaries = Vec::with_capacity(results.len());
         for row in results {
+            // Get message count separately (fast query per conversation)
             let message_count = self
                 .message_count_for_conversation(&row.id)
                 .await
@@ -514,6 +517,7 @@ impl StorageManager {
                 message_count,
             });
         }
+
         Ok(summaries)
     }
 

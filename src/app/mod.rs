@@ -181,6 +181,7 @@ impl App {
     pub fn new() -> Self {
         let available_models: HashMap<String, Vec<AvailableModel>> = HashMap::new();
         let selected_models = [
+            ("embeddings", vec!["bge-m3"]),
             ("translate", vec!["translategemma:latest"]),
             ("chat", vec!["gemma3:12b"]),
             ("routing", vec!["functiongemma"]),

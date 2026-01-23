@@ -100,10 +100,10 @@ pub struct EmbeddingsConfig {
 impl Default for EmbeddingsConfig {
     fn default() -> Self {
         Self {
-            model: "mxbai-embed-large".to_string(),
+            model: "bge-m3".to_string(),
             ollama_url: "http://localhost:11434".to_string(),
             similarity_threshold: 0.3,
-            max_retrieved_messages: 5,
+            max_retrieved_messages: 20,
         }
     }
 }

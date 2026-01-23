@@ -73,16 +73,25 @@ impl App {
         }
 
         let user_message = self.cleaned_chat_input_with_attachments();
-        self.chat_input.clear();
-        self.reset_chat_scroll();
-        self.add_user_message_to_history(&user_message);
-
+        
+        // Fast path check before clearing input
         if let Some(action) = select_fast_path_action(&user_message)? {
+            self.chat_input.clear();
+            self.reset_chat_scroll();
+            self.add_user_message_to_history(&user_message);
             self.add_assistant_message(&action.into_reply());
             return Ok(());
         }
 
+        // Clear input IMMEDIATELY for instant UI feedback
+        self.chat_input.clear();
+        self.reset_chat_scroll();
+        self.add_user_message_to_history(&user_message);
+        
+        // Set loading state IMMEDIATELY
         self.is_loading = true;
+        
+        // Quick intent classification for UI state (non-blocking part)
         let intent = classify_query(&user_message);
         let search_request = SearchStateRequest {
             query: &user_message,
