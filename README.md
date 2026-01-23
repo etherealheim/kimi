@@ -2,6 +2,9 @@
 
 Kimi is an experimental Rust TUI chat assistant. `Vibe-coded`, but with good intentions.
 
+<img width="400" height="380" alt="image" src="https://github.com/user-attachments/assets/65fa3b59-baac-4abe-8ac0-373ed4b52e9b" /> <img width="400" height="380" alt="image" src="https://github.com/user-attachments/assets/e9a1f625-dd59-44a0-a412-3ac57008e2db" />
+
+
 ##### Upcoming Features
 
 - [ ] Evolving Personality System - An adaptive personality system that learns and evolves based on user interactions
