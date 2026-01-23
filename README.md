@@ -1,6 +1,12 @@
+##### About
+
 Kimi is an experimental Rust TUI chat assistant. `Vibe-coded`, but with good intentions.
 
-## Quick Start
+##### Upcoming Features
+
+- [ ] Evolving Personality System - An adaptive personality system that learns and evolves based on user interactions
+
+##### Quick Start
 1. Install Rust by following the instructions at https://www.rust-lang.org/tools/install.
 
 2. Install Ollama by following the official guidance at https://ollama.com/download.
@@ -19,13 +25,9 @@ Kimi is an experimental Rust TUI chat assistant. `Vibe-coded`, but with good int
 
 The app works out of the box with Ollama (local models). API keys for ElevenLabs, Venice, Gab, and Brave Search are optional.
 
-## Database
+##### Database
 
 The application uses SurrealDB (RocksDB backend) for conversation history and embeddings. The database:
 
 - **Location**: `./data/kimi.db/`
 - **Not tracked in git**: Your conversation history stays private and local
-
-## Upcoming Features
-
-[ ] Evolving Personality System - An adaptive personality system that learns and evolves based on user interactions
