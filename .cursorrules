@@ -11,6 +11,13 @@
 - After implementing features, wait for user confirmation before committing
 - Do not automatically version bump or push changes
 
+## Documentation Policy
+**IMPORTANT**: Do not create new documentation files unless explicitly requested by the user.
+- No README.md updates unless asked
+- No new .md files (CONTRIBUTING.md, CHANGELOG.md, etc.) unless requested
+- Focus on code implementation, not documentation generation
+- Exception: When user explicitly asks for documentation or says "document this"
+
 ## Problem-Solving Philosophy
 **CRITICAL**: When debugging or implementing complex features, EXPLAIN THE PROBLEM FIRST before jumping to solutions.
 
