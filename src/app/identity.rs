@@ -3,10 +3,9 @@ use crate::app::App;
 use crate::services::identity::{IdentityReflectionInput, IdentityReflectionJob};
 
 impl App {
+    /// Spawns a background reflection job to update identity traits/dreams based on conversation.
+    /// This runs after each conversation summary, independent of personality toggle.
     pub(crate) fn maybe_spawn_identity_reflection(&self, summary: &str) {
-        if !self.personality_enabled {
-            return;
-        }
         let Some(manager) = self.agent_manager.clone() else {
             return;
         };

@@ -156,14 +156,32 @@ pub async fn retrieve_relevant_messages(
     Ok(filtered)
 }
 
+/// Maximum character length for embeddings (to avoid context length errors)
+const MAX_EMBEDDING_LENGTH: usize = 2000;
+
 /// Generates and returns an embedding for a message
 pub async fn generate_message_embedding(content: &str) -> Result<Option<Vec<f32>>> {
+    let trimmed = content.trim();
+    
     // Skip embedding for very short messages
-    if content.trim().len() < 10 {
+    if trimmed.len() < 10 {
         return Ok(None);
     }
     
-    match crate::services::embeddings::generate_embedding(content).await {
+    // Truncate if too long to avoid context length errors
+    let embedding_text = if trimmed.len() > MAX_EMBEDDING_LENGTH {
+        let truncated = &trimmed[..MAX_EMBEDDING_LENGTH];
+        // Try to truncate at word boundary
+        if let Some(last_space) = truncated.rfind(' ') {
+            &trimmed[..last_space]
+        } else {
+            truncated
+        }
+    } else {
+        trimmed
+    };
+    
+    match crate::services::embeddings::generate_embedding(embedding_text).await {
         Ok(embedding) => Ok(Some(embedding)),
         Err(error) => {
             // Log error but don't fail the entire operation

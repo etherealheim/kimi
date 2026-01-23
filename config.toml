@@ -28,14 +28,14 @@ max_retrieved_messages = 5
 [personality]
 selected = ""
 
-[agents.chat]
-model = "arya"
-system_prompt = "Kimi identity is loaded from data/identity-state.json."
+[agents.translate]
+model = "translategemma:latest"
+system_prompt = "You are a translation assistant. Translate text between languages clearly and accurately."
 
 [agents.routing]
 model = "functiongemma:latest"
 system_prompt = "Function calling router."
 
-[agents.translate]
-model = "translategemma:latest"
-system_prompt = "You are a translation assistant. Translate text between languages clearly and accurately."
+[agents.chat]
+model = "gemma3:12b"
+system_prompt = "Kimi identity is loaded from data/identity-state.json."

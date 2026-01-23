@@ -90,7 +90,6 @@ fn render_traits_panel(frame: &mut Frame, area: Rect, state: Option<&IdentitySta
     let traits = state.map_or(empty_traits, |value| value.traits.as_slice());
     
     let trait_count = traits.len();
-    let max_traits = 8; // MAX_TRAITS constant from persona.rs
     
     let mut items = vec![ListItem::new(Line::from(""))]; // Empty space at top
     if traits.is_empty() {
@@ -105,7 +104,7 @@ fn render_traits_panel(frame: &mut Frame, area: Rect, state: Option<&IdentitySta
             .title(Line::from(vec![
                 Span::styled(" Traits ", Style::default().fg(Color::White)),
                 Span::styled(
-                    format!("({}/{}) ", trait_count, max_traits),
+                    format!("({}) ", trait_count),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]))
@@ -115,6 +114,15 @@ fn render_traits_panel(frame: &mut Frame, area: Rect, state: Option<&IdentitySta
 }
 
 fn trait_list_item(entry: &IdentityTrait) -> ListItem<'_> {
+    let sign = if entry.strength >= 0.0 { "+" } else { "" };
+    let color = if entry.strength.abs() > 0.7 {
+        Color::Yellow // Strong traits
+    } else if entry.strength.abs() > 0.3 {
+        Color::Cyan // Moderate traits
+    } else {
+        Color::DarkGray // Weak/neutral traits
+    };
+    
     ListItem::new(Line::from(vec![
         Span::styled(
             entry.name.clone(),
@@ -122,8 +130,8 @@ fn trait_list_item(entry: &IdentityTrait) -> ListItem<'_> {
         ),
         Span::raw("  "),
         Span::styled(
-            format!("{:.2}", entry.strength),
-            Style::default().fg(Color::Cyan),
+            format!("{}{:.1}", sign, entry.strength),
+            Style::default().fg(color),
         ),
     ]))
 }

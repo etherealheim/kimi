@@ -8,7 +8,7 @@ use std::path::PathBuf;
 const IDENTITY_STATE_FILE: &str = "identity-state.json";
 const MAX_ACTIVE_DREAMS: usize = 3;
 const MAX_BACKLOG_DREAMS: usize = 5;
-const MAX_TRAITS: usize = 8;
+// Traits: No limit - AI can create and manage dynamically
 const TRAIT_DECAY_DAYS: i64 = 21;
 const DREAM_ACTIVE_DECAY_DAYS: i64 = 30;
 const DREAM_BACKLOG_DROP_DAYS: i64 = 60;
@@ -20,6 +20,9 @@ pub struct IdentityState {
     pub traits: Vec<IdentityTrait>,
     pub dreams: DreamSet,
     pub updated_at: Option<String>,
+    /// Timestamp of last reflection to prevent duplicate processing
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_reflection_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,7 +68,7 @@ impl IdentityTrait {
 
 impl Default for IdentityTrait {
     fn default() -> Self {
-        Self::new(String::new(), 0.5, TraitOrigin::Inferred)
+        Self::new(String::new(), 0.0, TraitOrigin::Inferred)
     }
 }
 
@@ -221,8 +224,23 @@ pub fn build_identity_prompt() -> Result<Option<String>> {
     Ok(Some(prompt))
 }
 
+/// Minimum seconds between identity reflections to prevent duplicate processing
+const REFLECTION_DEBOUNCE_SECS: i64 = 120;
+
 pub fn reflect_and_update_identity(job: IdentityReflectionJob) -> Result<()> {
     let mut state = read_identity_state()?;
+    let now = Local::now();
+    
+    // Debounce: skip if reflection was done recently
+    if let Some(last_reflection) = &state.last_reflection_at
+        && let Ok(last_time) = DateTime::parse_from_rfc3339(last_reflection)
+    {
+        let elapsed = now.signed_duration_since(last_time);
+        if elapsed.num_seconds() < REFLECTION_DEBOUNCE_SECS {
+            return Ok(()); // Skip - too soon since last reflection
+        }
+    }
+    
     let prompt = build_reflection_prompt(&state, &job.input)?;
     let messages = vec![
         AgentChatMessage::system("You update identity state. Output only JSON."),
@@ -230,7 +248,6 @@ pub fn reflect_and_update_identity(job: IdentityReflectionJob) -> Result<()> {
     ];
     let response = job.manager.chat(&job.agent, &messages)?;
     if let Some(output) = parse_reflection_output(&response) {
-        let now = Local::now();
         let mut context = IdentityUpdateContext {
             state: &mut state,
             now: &now,
@@ -238,6 +255,7 @@ pub fn reflect_and_update_identity(job: IdentityReflectionJob) -> Result<()> {
         apply_reflection_updates(&mut context, output);
         apply_decay(context.state, context.now);
         context.state.updated_at = Some(now.to_rfc3339());
+        context.state.last_reflection_at = Some(now.to_rfc3339());
         write_identity_state(&state)?;
     }
     Ok(())
@@ -274,17 +292,20 @@ fn format_identity_prompt(state: &IdentityState) -> String {
     }
     
     // Traits as behavioral guidance
-    if !state.traits.is_empty() {
-        let trait_lines: Vec<String> = state
-            .traits
-            .iter()
-            .filter(|t| !t.name.trim().is_empty())
-            .map(|t| format!("{}: {:.1}/10", t.name.trim(), t.strength * 10.0))
-            .collect();
-        if !trait_lines.is_empty() {
-            lines.push(format!("Behavioral traits: {}", trait_lines.join(", ")));
+        if !state.traits.is_empty() {
+            let trait_lines: Vec<String> = state
+                .traits
+                .iter()
+                .filter(|t| !t.name.trim().is_empty())
+                .map(|t| {
+                    let sign = if t.strength >= 0.0 { "+" } else { "" };
+                    format!("{}: {}{:.1}", t.name.trim(), sign, t.strength)
+                })
+                .collect();
+            if !trait_lines.is_empty() {
+                lines.push(format!("Behavioral traits: {}", trait_lines.join(", ")));
+            }
         }
-    }
     
     // Dreams as subtle motivations
     let active_dreams: Vec<&str> = state
@@ -307,20 +328,36 @@ fn build_reflection_prompt(
     let state_json = serde_json::to_string_pretty(state)?;
     let recent = input.recent_user_messages.join("\n");
     Ok(format!(
-        "Identity state (JSON):\n{}\n\n\
-Rules:\n\
-- Core beliefs are manual only; do NOT modify core.\n\
-- Traits: adjust strength 0.0-1.0. Use small changes (0.1-0.2).\n\
-- Add new traits only with strong evidence from multiple messages.\n\
-- Dreams: max 3 active, 5 backlog. Prefer backlog before active.\n\
-- Promote dreams only with repeated evidence or explicit confirmation.\n\
-- Keep updates gentle and minimal.\n\n\
+        "You are updating an AI identity based on conversation analysis.\n\n\
+Current identity state (JSON):\n{}\n\n\
+RULES:\n\
+1. Core beliefs: NEVER modify core.identity, core.beliefs, or core.backstory - these are STRICTLY user-controlled. DO NOT TOUCH.\n\
+2. Traits (-1.0 to 1.0 scale, 0.0 is neutral center):\n\
+   - Scale: -1.0 (extreme negative/passive) ↔ 0.0 (balanced/neutral) ↔ +1.0 (extreme positive/active)\n\
+   - Examples: assertiveness: -0.8 (very passive) vs +0.7 (assertive), creativity: +0.5 (moderately creative)\n\
+   - Traits naturally decay towards 0.0 without reinforcement (21 days)\n\
+   - If user EXPLICITLY asks to change a trait, apply significant change (0.2-0.3)\n\
+   - For implicit patterns, use smaller changes (0.1)\n\
+   - Set origin to \"manual\" if user explicitly requested, \"inferred\" otherwise\n\
+   - ONLY update if there's NEW evidence - don't re-apply the same change!\n\
+   - NO LIMIT on number of traits - create new ones freely when patterns emerge\n\
+3. Dreams:\n\
+   - Max 3 active, 5 backlog.\n\
+   - BEFORE adding: check if a similar dream already exists! Don't duplicate.\n\
+   - \"Assist creator\" and \"Assist Lukas\" are THE SAME dream - don't add both!\n\
+   - Only add dreams that reflect USER's interests/goals, not generic AI aspirations.\n\
+   - BAD dreams: \"Continuous improvement\", \"Learn more\", \"Help users\" (too generic)\n\
+   - GOOD dreams: specific things user wants to build, learn, or explore.\n\
+   - Add to backlog when user mentions NEW goals, interests, or aspirations.\n\
+   - Promote to active when user repeatedly discusses something or explicitly prioritizes it.\n\n\
 Conversation summary:\n{}\n\n\
 Recent user messages:\n{}\n\n\
-Return JSON only in this shape:\n\
-{{\n  \"trait_updates\": [{{\"name\":\"assertiveness\",\"target_strength\":0.7,\"origin\":\"manual\",\"evidence\":\"...\"}}],\n\
-  \"dream_updates\": [{{\"title\":\"explore ideas\",\"action\":\"add_backlog\",\"priority\":2,\"reason\":\"...\"}}]\n}}\n\
-If no changes are needed, return {{\"trait_updates\":[],\"dream_updates\":[]}}.",
+CRITICAL: Check existing state carefully! Don't duplicate dreams or re-apply the same trait changes.\n\n\
+Return ONLY valid JSON in this format:\n\
+{{\n  \"trait_updates\": [{{\"name\":\"trait_name\",\"target_strength\":0.3,\"origin\":\"manual\",\"evidence\":\"user said...\"}}],\n\
+  \"dream_updates\": [{{\"title\":\"dream title\",\"action\":\"add_backlog\",\"priority\":2,\"reason\":\"user mentioned...\"}}]\n}}\n\
+Trait strength: -1.0 to 1.0 (0.0 = neutral). Dream actions: add_active, add_backlog, promote, demote, retire\n\
+If truly no changes needed, return {{\"trait_updates\":[],\"dream_updates\":[]}}.",
         state_json, input.summary, recent
     ))
 }
@@ -345,7 +382,7 @@ fn apply_reflection_updates(
 ) {
     apply_trait_updates(context, &output.trait_updates);
     apply_dream_updates(context, &output.dream_updates);
-    cap_traits(context.state);
+    // No trait limit - AI manages traits dynamically
     cap_dreams(context.state);
 }
 
@@ -413,8 +450,18 @@ fn apply_dream_updates(context: &mut IdentityUpdateContext<'_>, updates: &[Dream
 }
 
 fn add_dream(list: &mut Vec<DreamEntry>, change: DreamChange<'_>) {
-    if list.iter().any(|entry| entry.title == change.title) {
-        update_dream_metadata(list, &change);
+    // Check for exact match or similar dream
+    if let Some(existing) = list.iter_mut().find(|entry| 
+        entry.title == change.title || dreams_are_similar(&entry.title, &change.title)
+    ) {
+        // Update existing dream instead of adding duplicate
+        existing.priority = change.priority.max(1);
+        existing.last_mention = Some(change.now.to_rfc3339());
+        if let Some(note) = change.reason.as_ref()
+            && !note.is_empty()
+        {
+            existing.progress_note = Some(note.to_string());
+        }
         return;
     }
     let mut entry = DreamEntry::new(change.title, change.priority, TraitOrigin::Inferred);
@@ -423,16 +470,29 @@ fn add_dream(list: &mut Vec<DreamEntry>, change: DreamChange<'_>) {
     list.push(entry);
 }
 
-fn update_dream_metadata(list: &mut [DreamEntry], change: &DreamChange<'_>) {
-    if let Some(entry) = list.iter_mut().find(|entry| entry.title == change.title) {
-        entry.priority = change.priority.max(1);
-        entry.last_mention = Some(change.now.to_rfc3339());
-        if let Some(note) = change.reason.as_ref()
-            && !note.is_empty()
-        {
-            entry.progress_note = Some(note.to_string());
-        }
+/// Check if two dream titles are semantically similar (fuzzy match)
+fn dreams_are_similar(a: &str, b: &str) -> bool {
+    let a_lower = a.to_lowercase();
+    let b_lower = b.to_lowercase();
+    
+    // If one contains the other (minus filler words), they're similar
+    let a_words: Vec<&str> = a_lower.split_whitespace()
+        .filter(|w| !["a", "the", "in", "to", "of", "for", "and", "or"].contains(w))
+        .collect();
+    let b_words: Vec<&str> = b_lower.split_whitespace()
+        .filter(|w| !["a", "the", "in", "to", "of", "for", "and", "or"].contains(w))
+        .collect();
+    
+    if a_words.is_empty() || b_words.is_empty() {
+        return false;
     }
+    
+    // Count matching meaningful words
+    let matching_words = a_words.iter().filter(|w| b_words.contains(w)).count();
+    let min_words = a_words.len().min(b_words.len());
+    
+    // If 70%+ of the shorter title's words match, consider them similar
+    matching_words as f32 / min_words as f32 >= 0.7
 }
 
 fn promote_dream(context: &mut IdentityUpdateContext<'_>, change: DreamChange<'_>) {
@@ -478,7 +538,8 @@ fn apply_trait_decay(state: &mut IdentityState, now: &DateTime<Local>) {
         if (now.naive_utc() - last_seen.naive_utc()).num_days() < TRAIT_DECAY_DAYS {
             continue;
         }
-        let neutral = 0.5;
+        // Drift towards 0.0 (neutral) without reinforcement
+        let neutral = 0.0;
         let drift = (trait_entry.strength - neutral) * 0.1;
         trait_entry.strength = clamp_strength(trait_entry.strength - drift);
     }
@@ -513,18 +574,16 @@ fn apply_dream_decay(state: &mut IdentityState, now: &DateTime<Local>) {
     });
 }
 
-fn cap_traits(state: &mut IdentityState) {
-    if state.traits.len() <= MAX_TRAITS {
-        return;
-    }
-    state.traits.sort_by(|left, right| {
-        right
-            .strength
-            .partial_cmp(&left.strength)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    state.traits.truncate(MAX_TRAITS);
-}
+// No longer needed - traits are unlimited
+// fn cap_traits(state: &mut IdentityState) {
+//     state.traits.sort_by(|left, right| {
+//         right
+//             .strength
+//             .abs()
+//             .partial_cmp(&left.strength.abs())
+//             .unwrap_or(std::cmp::Ordering::Equal)
+//     });
+// }
 
 fn cap_dreams(state: &mut IdentityState) {
     state.dreams.active.sort_by(|left, right| left.priority.cmp(&right.priority));
@@ -551,6 +610,6 @@ fn parse_timestamp(value: &str) -> Option<DateTime<Local>> {
 }
 
 fn clamp_strength(value: f32) -> f32 {
-    value.clamp(0.0, 1.0)
+    value.clamp(-1.0, 1.0)
 }
 

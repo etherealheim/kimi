@@ -33,3 +33,7 @@ The application uses SurrealDB (RocksDB backend) for conversation history and em
 
 - **Location**: `./data/kimi.db/`
 - **Not tracked in git**: Your conversation history stays private and local
+
+#### FAQ
+
+1. Some models are too assertive and dismiss the Identity.Choose more submissive model
