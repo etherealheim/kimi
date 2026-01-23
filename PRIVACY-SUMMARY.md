@@ -65,7 +65,13 @@ They need to:
 ### Check .gitignore Rules
 ```bash
 git check-ignore -v config.local.toml data/kimi.db/
-# Should show both are ignored
+# Should show both are ignored by .gitignore
+```
+
+### Check All Protected Files
+```bash
+git status --ignored --short
+# Should list: config.local.toml, data/kimi.db/, My personality.md, target/
 ```
 
 ### Check No Keys in History

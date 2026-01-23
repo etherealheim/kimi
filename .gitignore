@@ -1,7 +1,28 @@
+# Rust build artifacts
 /target
+tools/**/target/
+Cargo.lock.bak
+
+# Local configuration (contains API keys)
 config.local.toml
-temp/
+
+# Database files (local conversation history)
 data/kimi.db/
 data/history.db
+
+# Personal data
 data/personalities/My personality.md
-tools/**/target/
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.vim/
+
+# Temporary files
+temp/
+*.tmp
+*.log
