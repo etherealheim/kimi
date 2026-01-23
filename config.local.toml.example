@@ -1,0 +1,31 @@
+# Local Configuration Override
+# Copy this file to config.local.toml and add your personal API keys and settings
+# config.local.toml is gitignored and will never be committed
+
+# ElevenLabs TTS Configuration
+[elevenlabs]
+api_key = "your_elevenlabs_api_key_here"
+# Uncomment to override voice_id and model from config.toml
+# voice_id = "ZDLP92lTmp7Obqq7My6Y"
+# model = "eleven_turbo_v2_5"
+
+# Venice AI Configuration
+[venice]
+api_key = "your_venice_api_key_here"
+
+# Gab AI Configuration
+[gab]
+api_key = "your_gab_api_key_here"
+# Uncomment to override base_url from config.toml
+# base_url = "https://api.gab.ai/v1"
+
+# Brave Search Configuration
+[brave]
+api_key = "your_brave_search_api_key_here"
+
+# Obsidian Vault Configuration
+[obsidian]
+vault_path = "/path/to/your/obsidian/vault/"
+
+# Note: Any setting in this file will override the corresponding value in config.toml
+# You only need to include settings you want to override (e.g., API keys, personal paths)

@@ -34,7 +34,7 @@ This happens on first run in `StorageManager::new()` (see `src/storage.rs:134-14
 - `data/kimi.db/` - Your personal conversation database
 - `data/history.db` - Legacy database (deprecated)
 - `data/personalities/My personality.md` - Your personal profile
-- `config.local.toml` - Local configuration overrides
+- `config.local.toml` - Local configuration with API keys
 
 ### Configuration
 
@@ -43,8 +43,10 @@ This happens on first run in `StorageManager::new()` (see `src/storage.rs:134-14
 data/kimi.db/                           # Main database directory
 data/history.db                          # Legacy database file
 data/personalities/My personality.md     # Personal profile (local only)
-config.local.toml                        # Local config
+config.local.toml                        # Local config with API keys
 ```
+
+**Related**: See [CONFIG.md](CONFIG.md) for configuration system documentation.
 
 ### Personal Profile Setup
 
