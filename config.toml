@@ -17,20 +17,20 @@ base_url = "https://gab.ai/v1"
 api_key = ""
 
 [obsidian]
-vault_path = ""
+vault_path = "/home/ethereal/Documents/e-vault/"
 
 [embeddings]
 model = "mxbai-embed-large"
 ollama_url = "http://localhost:11434"
-similarity_threshold = 0.3
+similarity_threshold = 0.30000001192092896
 max_retrieved_messages = 5
 
 [personality]
-selected = "Casca"
+selected = ""
 
 [agents.chat]
-model = "gemma3:12b"
-system_prompt = "Kimi base prompt is loaded from data/personalities/Kimi.md."
+model = "arya"
+system_prompt = "Kimi identity is loaded from data/identity-state.json."
 
 [agents.routing]
 model = "functiongemma:latest"

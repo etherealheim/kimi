@@ -16,8 +16,6 @@ impl App {
                 } => {
                     self.is_loading = false;
                     self.is_searching = false;
-                    self.is_retrieving = false;
-                    self.is_analyzing = false;
                     self.is_fetching_notes = false;
                     self.last_response = Some(response.clone());
                     let display_name = if self.personality_enabled {
@@ -51,8 +49,6 @@ impl App {
                 AgentEvent::Error(error) => {
                     self.is_loading = false;
                     self.is_searching = false;
-                    self.is_retrieving = false;
-                    self.is_analyzing = false;
                     self.is_fetching_notes = false;
                     self.chat_history.push(ChatMessage {
                         role: MessageRole::System,
@@ -86,6 +82,7 @@ impl App {
 
                         let (short_summary, detailed_summary) =
                             Self::parse_summary_pair(&summary);
+                        self.maybe_spawn_identity_reflection(&detailed_summary);
 
                         if let Some(conversation_id) = &self.current_conversation_id {
                             let conv_id_clone = conversation_id.clone();
@@ -124,8 +121,6 @@ impl App {
                 AgentEvent::SystemMessage(message) => {
                     self.is_loading = false;
                     self.is_searching = false;
-                    self.is_retrieving = false;
-                    self.is_analyzing = false;
                     self.is_fetching_notes = false;
                     self.chat_history.push(ChatMessage {
                         role: MessageRole::System,

@@ -151,11 +151,7 @@ fn render_history_list(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::White)
             };
 
-            let meta_style = if is_selected {
-                Style::default().fg(Color::Black).bg(Color::Cyan)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
+            let meta_style = Style::default().fg(Color::DarkGray);
 
             let max_summary_width = area.width.saturating_sub(6) as usize;
             let summary_lines = wrap_summary_text(&summary_text, max_summary_width, 3);
@@ -171,25 +167,14 @@ fn render_history_list(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("   ", meta_style),
                 Span::styled(date_display, meta_style),
                 Span::styled(" · ", meta_style),
-                Span::styled(
-                    conv.agent_name.clone(),
-                    if is_selected {
-                        Style::default().fg(Color::Black).bg(Color::Cyan)
-                    } else {
-                        Style::default().fg(Color::Green)
-                    },
-                ),
+                Span::styled(conv.agent_name.clone(), Style::default().fg(Color::Green)),
                 Span::styled(format!(" · {} messages", conv.message_count), meta_style),
             ];
             if is_generating {
                 meta_spans.push(Span::styled(" · ", meta_style));
                 meta_spans.push(Span::styled(
                     PENDING_SUMMARY_LABEL,
-                    if is_selected {
-                        Style::default().fg(Color::Black).bg(Color::Cyan)
-                    } else {
-                        Style::default().fg(Color::Yellow)
-                    },
+                    Style::default().fg(Color::Yellow),
                 ));
             }
             let meta_line = Line::from(meta_spans);

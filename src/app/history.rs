@@ -25,6 +25,7 @@ impl App {
         self.chat_history.clear();
         self.chat_input.clear();
         self.current_conversation_id = None;
+        self.loaded_conversation_message_count = None;
         self.personality_text = None;
         if let Some(agent) = &self.current_agent {
             let agent_name = agent.name.clone();
@@ -115,6 +116,12 @@ impl App {
                 context_usage: None,
             });
         }
+
+        // Track initial message count to detect if conversation was modified
+        let non_system_count = self.chat_history.iter()
+            .filter(|msg| msg.role != MessageRole::System)
+            .count();
+        self.loaded_conversation_message_count = Some(non_system_count);
 
         self.current_conversation_id = Some(conv_id);
         self.chat_scroll_offset = 0;

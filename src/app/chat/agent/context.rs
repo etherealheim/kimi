@@ -45,8 +45,7 @@ pub fn format_summary_entries(entries: &[SummaryEntry]) -> String {
         .join("\n")
 }
 
-pub fn count_summary_matches(entries: &[SummaryEntry], tokens: &[String]) -> usize {
-    let _ = tokens;
+pub fn count_summary_matches(entries: &[SummaryEntry], _tokens: &[String]) -> usize {
     entries.len()
 }
 

@@ -165,22 +165,32 @@ Conversation: {}",
             return Ok(());
         }
 
-        self.is_generating_summary = true;
-        self.summary_active = true;
+        // Check if conversation was modified since loading
+        let current_non_system_count = self.chat_history.iter()
+            .filter(|msg| msg.role != MessageRole::System)
+            .count();
+        
+        let conversation_modified = self.loaded_conversation_message_count != Some(current_non_system_count);
 
-        let context = self.build_summary_context();
-        let messages = self.build_conversation_messages();
-        if let Err(error) = self.save_pending_conversation(&messages) {
-            self.show_status_toast(format!("HISTORY SAVE FAILED: {}", error));
+        // Only generate summary if conversation was actually modified
+        if conversation_modified {
+            self.is_generating_summary = true;
+            self.summary_active = true;
+
+            let context = self.build_summary_context();
+            let messages = self.build_conversation_messages();
+            if let Err(error) = self.save_pending_conversation(&messages) {
+                self.show_status_toast(format!("HISTORY SAVE FAILED: {}", error));
+            }
+            let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
+
+            Self::spawn_summary_generation_thread(
+                agent,
+                manager,
+                context,
+                agent_tx,
+            );
         }
-        let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
-
-        Self::spawn_summary_generation_thread(
-            agent,
-            manager,
-            context,
-            agent_tx,
-        );
 
         self.open_history();
         Ok(())

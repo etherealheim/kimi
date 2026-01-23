@@ -125,9 +125,9 @@ impl Default for Config {
     fn default() -> Self {
         let mut agents = HashMap::new();
 
-        // PERSONALITY: Base prompt is loaded from data/personalities/Kimi.md
-        let kimi_personality =
-            "Kimi base prompt is loaded from data/personalities/Kimi.md.";
+        // IDENTITY: Core identity is loaded from data/identity-state.json
+        let kimi_identity =
+            "Kimi identity is loaded from data/identity-state.json.";
 
         agents.insert(
             "translate".to_string(),
@@ -135,7 +135,7 @@ impl Default for Config {
                 model: "translategemma:latest".to_string(),
                 system_prompt: format!(
                     "{} You specialize in translation between languages.",
-                    kimi_personality
+                    kimi_identity
                 ),
             },
         );
@@ -144,7 +144,7 @@ impl Default for Config {
             "chat".to_string(),
             AgentConfig {
                 model: "gemma3:12b".to_string(),
-                system_prompt: kimi_personality.to_string(),
+                system_prompt: kimi_identity.to_string(),
             },
         );
 

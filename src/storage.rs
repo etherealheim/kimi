@@ -466,6 +466,7 @@ impl StorageManager {
             FROM message
             WHERE conversation = $conv_id
               AND role != \"System\"
+            GROUP ALL
         ")
         .bind(("conv_id", conversation_id.clone()))
         .await?;
@@ -619,13 +620,12 @@ impl StorageManager {
     /// Filters conversations by summary, agent name, or message content
     pub async fn filter_conversations(&self, filter: &str) -> Result<Vec<ConversationSummary>> {
         #[derive(Debug, Deserialize)]
-        struct ConvWithCount {
+        struct ConvRow {
             id: surrealdb::sql::Thing,
             agent_name: String,
             summary: Option<String>,
             detailed_summary: Option<String>,
             created_at: String,
-            message_count: usize,
         }
 
         let filter_str = filter.to_string();
@@ -635,8 +635,7 @@ impl StorageManager {
                 agent_name,
                 summary,
                 detailed_summary,
-                created_at,
-                (SELECT count() FROM message WHERE conversation = $parent.id AND role != \"System\" GROUP ALL)[0].count AS message_count
+                created_at
             FROM conversation
             WHERE 
                 string::contains(string::lowercase(summary), string::lowercase($filter))
@@ -650,19 +649,24 @@ impl StorageManager {
         .bind(("filter", filter_str))
         .await?;
 
-        let results: Vec<ConvWithCount> = response.take(0)?;
+        let results: Vec<ConvRow> = response.take(0)?;
 
-        Ok(results
-            .into_iter()
-            .map(|c| ConversationSummary {
-                id: c.id.to_string(),
-                agent_name: c.agent_name,
-                summary: c.summary,
-                detailed_summary: c.detailed_summary,
-                created_at: c.created_at,
-                message_count: c.message_count,
-            })
-            .collect())
+        let mut summaries = Vec::with_capacity(results.len());
+        for row in results {
+            let message_count = self
+                .message_count_for_conversation(&row.id)
+                .await
+                .unwrap_or_default();
+            summaries.push(ConversationSummary {
+                id: row.id.to_string(),
+                agent_name: row.agent_name,
+                summary: row.summary,
+                detailed_summary: row.detailed_summary,
+                created_at: row.created_at,
+                message_count,
+            });
+        }
+        Ok(summaries)
     }
 
     /// Updates only conversation messages (keeps existing summaries)

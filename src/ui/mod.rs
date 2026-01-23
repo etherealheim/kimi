@@ -6,6 +6,7 @@ mod history;
 mod menu;
 mod models;
 mod personality;
+mod identity;
 mod utils;
 
 use crate::app::{App, AppMode};
@@ -33,6 +34,7 @@ pub fn render(f: &mut Frame, app: &App) {
             personality::render_personality_view(f, app);
             personality::render_personality_create(f, app);
         }
+        AppMode::IdentityView => identity::render_identity_view(f, app),
     }
 
     // Overlay command menu if active

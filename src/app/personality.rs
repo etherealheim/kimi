@@ -113,9 +113,16 @@ impl App {
 
     pub fn select_personality(&mut self) -> Result<()> {
         if self.personality_selected_index == BASE_PERSONALITY_INDEX {
-            return self.edit_selected_personality();
+            self.open_identity_view();
+            return Ok(());
         }
         if self.personality_selected_index == MY_PERSONALITY_INDEX {
+            if let Err(error) =
+                crate::services::personality::open_my_personality_in_new_terminal()
+            {
+                crate::services::personality::open_my_personality_in_place()?;
+                self.add_system_message(&format!("My personality editor error: {}", error));
+            }
             return Ok(());
         }
         if let Some(name) = self

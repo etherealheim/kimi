@@ -100,14 +100,17 @@ impl App {
         {
             self.personality_enabled = is_enabled;
             if self.personality_enabled {
-                let selected_name = self
-                    .personality_name
-                    .clone()
-                    .unwrap_or_else(crate::services::personality::default_personality_name);
-                if let Ok(text) = crate::services::personality::read_personality(&selected_name)
-                    && !text.trim().is_empty()
-                {
-                    self.personality_text = Some(text);
+                // Only load personality text if explicitly selected (not None)
+                if let Some(selected_name) = &self.personality_name {
+                    if let Ok(text) = crate::services::personality::read_personality(selected_name)
+                        && !text.trim().is_empty()
+                    {
+                        self.personality_text = Some(text);
+                    } else {
+                        self.personality_text = None;
+                    }
+                } else {
+                    self.personality_text = None;
                 }
             } else {
                 self.personality_text = None;
@@ -367,11 +370,9 @@ pub(crate) fn build_agent_messages_from_snapshot(
 ) -> ChatBuildResultWithUsage {
     let mut personality_text = snapshot.personality_text.clone();
     if snapshot.personality_enabled && personality_text.is_none() {
-        let selected_name = snapshot
-            .personality_name
-            .clone()
-            .unwrap_or_else(crate::services::personality::default_personality_name);
-        if let Ok(text) = crate::services::personality::read_personality(&selected_name)
+        // Only load personality text if explicitly selected (not None)
+        if let Some(selected_name) = &snapshot.personality_name
+            && let Ok(text) = crate::services::personality::read_personality(selected_name)
             && !text.trim().is_empty()
         {
             personality_text = Some(text);
@@ -647,6 +648,9 @@ pub(crate) fn build_agent_messages_from_snapshot(
         .iter()
         .any(|line| line.starts_with("Brave search results for"));
     
+    if let Ok(Some(identity_prompt)) = crate::services::identity::build_identity_prompt() {
+        prompt_lines.push(identity_prompt);
+    }
     if snapshot.personality_enabled
         && let Some(text) = &personality_text
         && !text.trim().is_empty()

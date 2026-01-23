@@ -88,16 +88,13 @@ impl App {
             query: &user_message,
             intent,
         };
-        let is_profile_query = crate::services::retrieval::is_profile_query(&user_message);
-        self.is_searching = !is_profile_query && self.should_mark_searching(search_request);
-        self.is_retrieving = should_mark_retrieving(&user_message);
+        self.is_searching = self.should_mark_searching(search_request);
         let is_fetching_notes = crate::app::chat::agent::obsidian::should_fetch_obsidian_for_intent(
             &self.connect_obsidian_vault,
             &user_message,
             intent,
         );
         self.is_fetching_notes = is_fetching_notes;
-        self.is_analyzing = !self.chat_attachments.is_empty();
         
         // Clear cached notes if query is not about notes/follow-up
         if !is_fetching_notes && !query_is_notes_follow_up(&user_message) {
@@ -813,42 +810,4 @@ fn parse_weekday(text: &str) -> Option<chrono::Weekday> {
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
-}
-
-/// Determines if the query might trigger memory retrieval
-fn should_mark_retrieving(query: &str) -> bool {
-    let lowered = query.to_lowercase();
-    let memory_triggers = [
-        "what do i like",
-        "what do i love",
-        "what do i prefer",
-        "what did i say",
-        "what did i tell",
-        "what did i mention",
-        "what have i said",
-        "do i like",
-        "do i love",
-        "do i prefer",
-        "did i say",
-        "did i tell",
-        "did i mention",
-        "about me",
-        "who am i",
-        "my profile",
-        "my preferences",
-        "my favorite",
-        "my favourite",
-        "remember when",
-        "remember that",
-        "recall",
-        "you know about me",
-        "you know that i",
-        "told you",
-        "mentioned",
-        "we talked",
-        "we discussed",
-        "last time",
-        "previously",
-    ];
-    memory_triggers.iter().any(|trigger| lowered.contains(trigger))
 }

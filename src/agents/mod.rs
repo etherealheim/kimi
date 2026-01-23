@@ -74,19 +74,15 @@ impl AgentManager {
         let start = Instant::now();
 
         if agent.model_source == ModelSource::VeniceAPI {
-            let api_key = self
-                .venice_api_key
+            self.venice_api_key
                 .as_ref()
                 .ok_or_else(|| color_eyre::eyre::eyre!("Venice API key not configured"))?;
-            let _ = api_key;
             return Ok("Venice API ready".to_string());
         }
         if agent.model_source == ModelSource::GabAI {
-            let api_key = self
-                .gab_api_key
+            self.gab_api_key
                 .as_ref()
                 .ok_or_else(|| color_eyre::eyre::eyre!("Gab AI key not configured"))?;
-            let _ = api_key;
             return Ok("Gab AI ready".to_string());
         }
 

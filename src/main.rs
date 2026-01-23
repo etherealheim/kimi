@@ -189,6 +189,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                         AppMode::PersonalityCreate => {
                             handle_personality_create_mode(app, key.code)?
                         }
+                        AppMode::IdentityView => handle_identity_view_mode(app, key.code)?,
                     }
                 }
                 Event::Mouse(mouse) => {
@@ -587,7 +588,11 @@ fn handle_paste(app: &mut App, paste: &str) -> Result<()> {
                 app.add_personality_char(character);
             }
         }
-        AppMode::ModelSelection | AppMode::Connect | AppMode::Help | AppMode::PersonalitySelection => {}
+        AppMode::ModelSelection
+        | AppMode::Connect
+        | AppMode::Help
+        | AppMode::PersonalitySelection
+        | AppMode::IdentityView => {}
     }
 
     Ok(())
@@ -625,6 +630,7 @@ fn is_in_chat_history(column: u16, row: u16) -> Result<bool> {
 
 fn handle_history_mode(app: &mut App, key_code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
     if app.history_delete_all_active {
+        #[allow(clippy::wildcard_enum_match_arm)]
         match key_code {
             KeyCode::Esc => app.cancel_history_delete_all(),
             KeyCode::Enter => app.confirm_history_delete_all()?,
@@ -820,6 +826,13 @@ fn handle_personality_create_mode(app: &mut App, key_code: KeyCode) -> Result<()
         | KeyCode::KeypadBegin
         | KeyCode::Media(_)
         | KeyCode::Modifier(_) => {}
+    }
+    Ok(())
+}
+
+fn handle_identity_view_mode(app: &mut App, key_code: KeyCode) -> Result<()> {
+    if key_code == KeyCode::Esc {
+        app.close_identity_view();
     }
     Ok(())
 }

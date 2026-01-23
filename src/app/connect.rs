@@ -67,7 +67,6 @@ impl App {
 
     pub fn save_api_key(&mut self) -> Result<()> {
         if let Some(provider) = self.connect_current_provider.clone() {
-            let provider_name = provider.clone();
             let mut did_save = false;
             match provider.as_str() {
                 "ElevenLabs" => {
@@ -161,7 +160,6 @@ impl App {
             }
 
             if did_save {
-                let _ = provider_name;
                 self.show_status_toast("KEY SAVED");
             }
         }

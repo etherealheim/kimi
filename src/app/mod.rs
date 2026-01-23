@@ -6,6 +6,7 @@ mod help;
 mod history;
 mod models;
 mod navigation;
+mod identity;
 mod personality;
 mod scroll;
 #[path = "text-input.rs"]
@@ -39,6 +40,7 @@ pub enum AppMode {
     Help,
     PersonalitySelection,
     PersonalityCreate,
+    IdentityView,
 }
 
 /// Events from the agent processing thread
@@ -79,8 +81,6 @@ pub struct App {
     pub current_agent: Option<Agent>,
     pub is_loading: bool,
     pub is_searching: bool,
-    pub is_retrieving: bool,
-    pub is_analyzing: bool,
     pub is_fetching_notes: bool,
     pub last_response: Option<String>,
     pub agent_manager: Option<AgentManager>,
@@ -125,6 +125,7 @@ pub struct App {
     pub storage_runtime: Option<tokio::runtime::Runtime>,
     pub is_generating_summary: bool,
     pub current_conversation_id: Option<String>,
+    pub loaded_conversation_message_count: Option<usize>,
     pub status_toast: Option<StatusToast>,
     pub clipboard_service: ClipboardService,
     pub personality_enabled: bool,
@@ -212,8 +213,6 @@ impl App {
             current_agent: None, // Will be set in init_services
             is_loading: false,
             is_searching: false,
-            is_retrieving: false,
-            is_analyzing: false,
             is_fetching_notes: false,
             last_response: None,
             agent_manager: None,
@@ -256,6 +255,7 @@ impl App {
             storage_runtime: None,
             is_generating_summary: false,
             current_conversation_id: None,
+            loaded_conversation_message_count: None,
             status_toast: None,
             clipboard_service: ClipboardService::new(),
             personality_enabled: false,
