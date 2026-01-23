@@ -168,6 +168,11 @@ fn looks_like_weather_question(lowered: &str) -> bool {
         "wind",
         "humidity",
     ];
-    weather_terms.iter().any(|term| lowered.contains(term))
+    weather_terms.iter().any(|term| {
+        lowered.split_whitespace().any(|word| {
+            let cleaned = word.trim_matches(|character: char| !character.is_alphanumeric());
+            cleaned == *term
+        })
+    })
 }
 

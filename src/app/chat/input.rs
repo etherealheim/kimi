@@ -598,7 +598,7 @@ fn should_handle_weather_question(lowered: &str) -> bool {
         "wind",
         "humidity",
     ];
-    if !contains_any(lowered, &weather_terms) {
+    if !contains_any_word(lowered, &weather_terms) {
         return false;
     }
     let question_prefixes = [
@@ -810,4 +810,13 @@ fn parse_weekday(text: &str) -> Option<chrono::Weekday> {
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn contains_any_word(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| {
+        haystack.split_whitespace().any(|word| {
+            let cleaned = word.trim_matches(|character: char| !character.is_alphanumeric());
+            cleaned == *needle
+        })
+    })
 }

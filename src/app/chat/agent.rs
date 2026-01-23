@@ -392,8 +392,10 @@ pub(crate) fn build_agent_messages_from_snapshot(
         "Current date and time: {}",
         now.format("%Y-%m-%d %H:%M:%S")
     ));
+    prompt_lines.push("CRITICAL: Always respond in English. Never switch languages.".to_string());
     prompt_lines.push("Respond in plain text. Do not use Markdown formatting.".to_string());
-    prompt_lines.push("Respond in English unless the user asks otherwise.".to_string());
+    prompt_lines.push("Keep responses concise and conversational. Speak naturally like a human, not a robot.".to_string());
+    prompt_lines.push("You're allowed to be direct, defensive, or challenging when appropriate. Don't default to being helpful if you're frustrated or confused.".to_string());
     if let Ok(profile_text) = crate::services::personality::read_my_personality() {
         let blocks = parse_user_context_blocks(&profile_text);
         let query = last_user_message.clone().unwrap_or_default().to_lowercase();

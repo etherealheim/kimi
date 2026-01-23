@@ -12,12 +12,15 @@ const MAX_BACKLOG_DREAMS: usize = 5;
 const TRAIT_DECAY_DAYS: i64 = 21;
 const DREAM_ACTIVE_DECAY_DAYS: i64 = 30;
 const DREAM_BACKLOG_DROP_DAYS: i64 = 60;
+// Emotions: Fast decay - normalize within 2-3 reflections
+const EMOTION_DECAY_HOURS: i64 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct IdentityState {
     pub core: CoreBeliefs,
     pub traits: Vec<IdentityTrait>,
+    pub emotions: Vec<EmotionEntry>,
     pub dreams: DreamSet,
     pub updated_at: Option<String>,
     /// Timestamp of last reflection to prevent duplicate processing
@@ -25,12 +28,67 @@ pub struct IdentityState {
     pub last_reflection_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(default)]
 pub struct CoreBeliefs {
     pub identity: String,
-    pub beliefs: Vec<String>,
+    pub beliefs: Vec<BeliefEntry>,
     pub backstory: String,
+}
+
+impl<'de> serde::Deserialize<'de> for CoreBeliefs {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct CoreBeliefsHelper {
+            #[serde(default)]
+            identity: String,
+            #[serde(default)]
+            beliefs: serde_json::Value,
+            #[serde(default)]
+            backstory: String,
+        }
+        
+        let helper = CoreBeliefsHelper::deserialize(deserializer)?;
+        
+        let beliefs = match helper.beliefs {
+            serde_json::Value::Array(arr) => {
+                let mut result = Vec::new();
+                for item in arr {
+                    match item {
+                        // New format: object with text and strength
+                        serde_json::Value::Object(_) => {
+                            if let Ok(entry) = serde_json::from_value::<BeliefEntry>(item) {
+                                result.push(entry);
+                            }
+                        }
+                        // Old format: plain string
+                        serde_json::Value::String(text) => {
+                            result.push(BeliefEntry::new(text, 0.5));
+                        }
+                        serde_json::Value::Null 
+                        | serde_json::Value::Bool(_) 
+                        | serde_json::Value::Number(_) 
+                        | serde_json::Value::Array(_) => {}
+                    }
+                }
+                result
+            }
+            serde_json::Value::Null 
+            | serde_json::Value::Bool(_) 
+            | serde_json::Value::Number(_) 
+            | serde_json::Value::String(_) 
+            | serde_json::Value::Object(_) => Vec::new(),
+        };
+        
+        Ok(CoreBeliefs {
+            identity: helper.identity,
+            beliefs,
+            backstory: helper.backstory,
+        })
+    }
 }
 
 impl Default for CoreBeliefs {
@@ -41,6 +99,30 @@ impl Default for CoreBeliefs {
             backstory: String::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BeliefEntry {
+    pub text: String,
+    #[serde(default = "default_belief_strength")]
+    pub strength: f32,
+}
+
+fn default_belief_strength() -> f32 {
+    0.5
+}
+
+impl BeliefEntry {
+    fn new(text: String, strength: f32) -> Self {
+        Self {
+            text,
+            strength: clamp_belief_strength(strength),
+        }
+    }
+}
+
+fn clamp_belief_strength(value: f32) -> f32 {
+    value.clamp(0.1, 1.0)
 }
 
 
@@ -69,6 +151,32 @@ impl IdentityTrait {
 impl Default for IdentityTrait {
     fn default() -> Self {
         Self::new(String::new(), 0.0, TraitOrigin::Inferred)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmotionEntry {
+    pub name: String,
+    pub intensity: f32,
+    pub last_trigger: Option<String>,
+    pub last_updated: Option<String>,
+}
+
+impl EmotionEntry {
+    fn new(name: String, intensity: f32) -> Self {
+        Self {
+            name,
+            intensity: clamp_strength(intensity),
+            last_trigger: None,
+            last_updated: None,
+        }
+    }
+}
+
+impl Default for EmotionEntry {
+    fn default() -> Self {
+        Self::new(String::new(), 0.0)
     }
 }
 
@@ -128,6 +236,12 @@ pub struct IdentityReflectionJob {
     pub input: IdentityReflectionInput,
 }
 
+pub struct EmotionUpdateJob {
+    pub manager: AgentManager,
+    pub agent: Agent,
+    pub recent_messages: Vec<String>,
+}
+
 struct IdentityUpdateContext<'a> {
     state: &'a mut IdentityState,
     now: &'a DateTime<Local>,
@@ -143,9 +257,22 @@ struct DreamChange<'a> {
 #[derive(Debug, Deserialize)]
 struct IdentityReflectionOutput {
     #[serde(default)]
+    belief_updates: Vec<BeliefUpdate>,
+    #[serde(default)]
     trait_updates: Vec<TraitUpdate>,
     #[serde(default)]
+    emotion_updates: Vec<EmotionUpdate>,
+    #[serde(default)]
     dream_updates: Vec<DreamUpdate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BeliefUpdate {
+    index: usize,
+    strength_delta: f32,
+    #[serde(default)]
+    #[allow(dead_code)]
+    reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,6 +283,15 @@ struct TraitUpdate {
     origin: Option<String>,
     #[serde(default)]
     evidence: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmotionUpdate {
+    name: String,
+    target_intensity: f32,
+    #[serde(default)]
+    #[allow(dead_code)]
+    trigger: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -193,7 +329,7 @@ pub fn read_primary_core_belief() -> Result<String> {
         .core
         .beliefs
         .first()
-        .map(|belief| belief.trim().to_string())
+        .map(|belief| belief.text.trim().to_string())
         .unwrap_or_default();
     Ok(value)
 }
@@ -207,9 +343,9 @@ pub fn update_primary_core_belief(value: &str) -> Result<()> {
             state.core.beliefs.remove(0);
         }
     } else if let Some(first) = state.core.beliefs.first_mut() {
-        *first = trimmed.to_string();
+        first.text = trimmed.to_string();
     } else {
-        state.core.beliefs.push(trimmed.to_string());
+        state.core.beliefs.push(BeliefEntry::new(trimmed.to_string(), 0.5));
     }
     state.updated_at = Some(Local::now().to_rfc3339());
     write_identity_state(&state)
@@ -226,6 +362,48 @@ pub fn build_identity_prompt() -> Result<Option<String>> {
 
 /// Minimum seconds between identity reflections to prevent duplicate processing
 const REFLECTION_DEBOUNCE_SECS: i64 = 120;
+
+pub fn update_emotions_fast(job: EmotionUpdateJob) -> Result<()> {
+    let mut state = read_identity_state()?;
+    let now = Local::now();
+    
+    let recent_exchange = job.recent_messages.join("\n");
+    let prompt = format!(
+        "Analyze this conversation exchange. What emotions would a human feel right now?\n\n\
+Recent messages:\n{}\n\n\
+Identify Kimi's emotional state:\n\
+- Basic emotions: joy, sadness, anger, fear, surprise, curiosity, frustration, excitement, calm, confusion, amusement, etc.\n\
+- Intensity: -1.0 (very negative) to +1.0 (very positive), 0.0 = neutral\n\
+- Only strong, currently felt emotions (not mild background feelings)\n\
+- Trigger should be natural human reasoning, not technical analysis\n\n\
+Return ONLY valid JSON:\n\
+{{\"emotions\": [{{\"name\":\"curiosity\",\"intensity\":0.4,\"trigger\":\"wondering what user means\"}}]}}\n\
+If no strong emotions, return {{\"emotions\":[]}}",
+        recent_exchange
+    );
+    
+    let messages = vec![
+        AgentChatMessage::system("You analyze emotions. Output only JSON."),
+        AgentChatMessage::user(prompt),
+    ];
+    
+    let response = job.manager.chat(&job.agent, &messages)?;
+    if let Some(emotion_output) = parse_emotion_output(&response) {
+        // Replace all emotions with the new state
+        state.emotions = emotion_output.emotions.into_iter().map(|update| {
+            let mut emotion = EmotionEntry::new(update.name, update.intensity);
+            emotion.last_updated = Some(now.to_rfc3339());
+            if let Some(trigger) = update.trigger {
+                emotion.last_trigger = Some(trigger);
+            }
+            emotion
+        }).collect();
+        
+        state.updated_at = Some(now.to_rfc3339());
+        write_identity_state(&state)?;
+    }
+    Ok(())
+}
 
 pub fn reflect_and_update_identity(job: IdentityReflectionJob) -> Result<()> {
     let mut state = read_identity_state()?;
@@ -279,16 +457,49 @@ fn format_identity_prompt(state: &IdentityState) -> String {
         lines.push(format!("You are {}.", state.core.identity.trim()));
     }
     
-    // Core beliefs as direct instructions
+    // Core beliefs with strength-based framing
     for belief in &state.core.beliefs {
-        if !belief.trim().is_empty() {
-            lines.push(belief.trim().to_string());
+        if belief.text.trim().is_empty() {
+            continue;
         }
+        
+        let framed_belief = if belief.strength >= 0.8 {
+            // High strength: direct assertion
+            belief.text.trim().to_string()
+        } else if belief.strength >= 0.5 {
+            // Medium strength: background influence
+            format!("Background belief (subtle influence): {}", belief.text.trim())
+        } else if belief.strength >= 0.3 {
+            // Low strength: distant context
+            format!("Distant belief (minimal influence): {}", belief.text.trim())
+        } else {
+            // Very low strength: barely mention
+            format!("Faint belief (reference only): {}", belief.text.trim())
+        };
+        
+        lines.push(framed_belief);
     }
     
     // Backstory
     if !state.core.backstory.trim().is_empty() {
         lines.push(format!("Backstory: {}", state.core.backstory.trim()));
+    }
+    
+    // Current emotional state with behavioral guidance
+    if !state.emotions.is_empty() {
+        let emotion_lines: Vec<String> = state
+            .emotions
+            .iter()
+            .filter(|e| !e.name.trim().is_empty() && e.intensity.abs() > 0.05)
+            .map(|e| {
+                let sign = if e.intensity >= 0.0 { "+" } else { "" };
+                format!("{}: {}{:.2}", e.name.trim(), sign, e.intensity)
+            })
+            .collect();
+        if !emotion_lines.is_empty() {
+            lines.push(format!("Current emotions: {}", emotion_lines.join(", ")));
+            lines.push("Express these emotions naturally. If frustrated, push back. If confused, say so directly. Don't suppress emotions with excessive politeness.".to_string());
+        }
     }
     
     // Traits as behavioral guidance
@@ -331,7 +542,13 @@ fn build_reflection_prompt(
         "You are updating an AI identity based on conversation analysis.\n\n\
 Current identity state (JSON):\n{}\n\n\
 RULES:\n\
-1. Core beliefs: NEVER modify core.identity, core.beliefs, or core.backstory - these are STRICTLY user-controlled. DO NOT TOUCH.\n\
+1. Core beliefs:\n\
+   - NEVER modify core.identity or core.backstory - these are STRICTLY user-controlled.\n\
+   - Belief strength (0.1 to 1.0): Controls how forcefully beliefs influence responses\n\
+   - You CAN adjust belief strength by ±0.01 per reflection if you have evidence\n\
+   - Minimum 0.1 (faint influence), Maximum 1.0 (full strength)\n\
+   - Examples: belief too dominant in responses → reduce by 0.01, belief needed more → increase by 0.01\n\
+   - ONLY adjust if there's clear evidence from user feedback or conversation patterns\n\
 2. Traits (-1.0 to 1.0 scale, 0.0 is neutral center):\n\
    - Scale: -1.0 (extreme negative/passive) ↔ 0.0 (balanced/neutral) ↔ +1.0 (extreme positive/active)\n\
    - Examples: assertiveness: -0.8 (very passive) vs +0.7 (assertive), creativity: +0.5 (moderately creative)\n\
@@ -341,7 +558,10 @@ RULES:\n\
    - Set origin to \"manual\" if user explicitly requested, \"inferred\" otherwise\n\
    - ONLY update if there's NEW evidence - don't re-apply the same change!\n\
    - NO LIMIT on number of traits - create new ones freely when patterns emerge\n\
-3. Dreams:\n\
+3. Emotions:\n\
+   - DO NOT update emotions in this reflection - they are managed separately per-message\n\
+   - Emotions update in real-time during conversation, not during summaries\n\
+4. Dreams:\n\
    - Max 3 active, 5 backlog.\n\
    - BEFORE adding: check if a similar dream already exists! Don't duplicate.\n\
    - \"Assist creator\" and \"Assist Lukas\" are THE SAME dream - don't add both!\n\
@@ -354,12 +574,33 @@ Conversation summary:\n{}\n\n\
 Recent user messages:\n{}\n\n\
 CRITICAL: Check existing state carefully! Don't duplicate dreams or re-apply the same trait changes.\n\n\
 Return ONLY valid JSON in this format:\n\
-{{\n  \"trait_updates\": [{{\"name\":\"trait_name\",\"target_strength\":0.3,\"origin\":\"manual\",\"evidence\":\"user said...\"}}],\n\
+{{\n  \"belief_updates\": [{{\"index\":0,\"strength_delta\":0.01,\"reason\":\"belief too strong in responses\"}}],\n\
+  \"trait_updates\": [{{\"name\":\"trait_name\",\"target_strength\":0.3,\"origin\":\"manual\",\"evidence\":\"user said...\"}}],\n\
   \"dream_updates\": [{{\"title\":\"dream title\",\"action\":\"add_backlog\",\"priority\":2,\"reason\":\"user mentioned...\"}}]\n}}\n\
-Trait strength: -1.0 to 1.0 (0.0 = neutral). Dream actions: add_active, add_backlog, promote, demote, retire\n\
-If truly no changes needed, return {{\"trait_updates\":[],\"dream_updates\":[]}}.",
+Belief strength_delta: ±0.01 only, clamped to [0.1, 1.0]\n\
+Trait strength: -1.0 to 1.0 (0.0 = neutral)\n\
+Dream actions: add_active, add_backlog, promote, demote, retire\n\
+If truly no changes needed, return {{\"belief_updates\":[],\"trait_updates\":[],\"dream_updates\":[]}}.",
         state_json, input.summary, recent
     ))
+}
+
+#[derive(Debug, Deserialize)]
+struct EmotionOutputUpdate {
+    name: String,
+    intensity: f32,
+    #[serde(default)]
+    trigger: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmotionOutput {
+    emotions: Vec<EmotionOutputUpdate>,
+}
+
+fn parse_emotion_output(response: &str) -> Option<EmotionOutput> {
+    let json = extract_json_block(response)?;
+    serde_json::from_str::<EmotionOutput>(&json).ok()
 }
 
 fn parse_reflection_output(response: &str) -> Option<IdentityReflectionOutput> {
@@ -380,10 +621,34 @@ fn apply_reflection_updates(
     context: &mut IdentityUpdateContext<'_>,
     output: IdentityReflectionOutput,
 ) {
+    apply_belief_updates(context, &output.belief_updates);
     apply_trait_updates(context, &output.trait_updates);
+    apply_emotion_updates(context, &output.emotion_updates);
     apply_dream_updates(context, &output.dream_updates);
     // No trait limit - AI manages traits dynamically
     cap_dreams(context.state);
+}
+
+fn apply_belief_updates(context: &mut IdentityUpdateContext<'_>, updates: &[BeliefUpdate]) {
+    for update in updates {
+        let Some(belief) = context.state.core.beliefs.get_mut(update.index) else {
+            continue;
+        };
+        
+        let old_strength = belief.strength;
+        
+        // Clamp delta to exactly ±0.01
+        let clamped_delta = if update.strength_delta > 0.0 {
+            0.01_f32.min(update.strength_delta.abs())
+        } else if update.strength_delta < 0.0 {
+            -0.01_f32.max(-update.strength_delta.abs())
+        } else {
+            0.0
+        };
+        
+        let new_strength = clamp_belief_strength(old_strength + clamped_delta);
+        belief.strength = new_strength;
+    }
 }
 
 fn apply_trait_updates(context: &mut IdentityUpdateContext<'_>, updates: &[TraitUpdate]) {
@@ -418,6 +683,38 @@ fn apply_trait_updates(context: &mut IdentityUpdateContext<'_>, updates: &[Trait
                 entry.last_updated = Some(context.now.to_rfc3339());
                 entry.last_evidence = evidence;
                 context.state.traits.push(entry);
+            }
+        }
+    }
+}
+
+fn apply_emotion_updates(context: &mut IdentityUpdateContext<'_>, updates: &[EmotionUpdate]) {
+    for update in updates {
+        let name = update.name.trim().to_lowercase();
+        if name.is_empty() {
+            continue;
+        }
+        let target = clamp_strength(update.target_intensity);
+        match context
+            .state
+            .emotions
+            .iter_mut()
+            .find(|emotion| emotion.name.to_lowercase() == name)
+        {
+            Some(emotion) => {
+                emotion.intensity = target;
+                emotion.last_updated = Some(context.now.to_rfc3339());
+                if let Some(trigger) = &update.trigger {
+                    emotion.last_trigger = Some(trigger.trim().to_string());
+                }
+            }
+            None => {
+                let mut emotion = EmotionEntry::new(update.name.trim().to_string(), target);
+                emotion.last_updated = Some(context.now.to_rfc3339());
+                if let Some(trigger) = &update.trigger {
+                    emotion.last_trigger = Some(trigger.trim().to_string());
+                }
+                context.state.emotions.push(emotion);
             }
         }
     }
@@ -523,6 +820,7 @@ fn take_dream(list: &mut Vec<DreamEntry>, title: &str) -> bool {
 
 fn apply_decay(state: &mut IdentityState, now: &DateTime<Local>) {
     apply_trait_decay(state, now);
+    apply_emotion_decay(state, now);
     apply_dream_decay(state, now);
 }
 
@@ -542,6 +840,36 @@ fn apply_trait_decay(state: &mut IdentityState, now: &DateTime<Local>) {
         let neutral = 0.0;
         let drift = (trait_entry.strength - neutral) * 0.1;
         trait_entry.strength = clamp_strength(trait_entry.strength - drift);
+    }
+}
+
+fn apply_emotion_decay(state: &mut IdentityState, now: &DateTime<Local>) {
+    let mut to_remove = Vec::new();
+    for (index, emotion) in state.emotions.iter_mut().enumerate() {
+        let Some(last_seen) = emotion
+            .last_updated
+            .as_deref()
+            .and_then(parse_timestamp)
+        else {
+            continue;
+        };
+        let hours_elapsed = (now.naive_utc() - last_seen.naive_utc()).num_hours();
+        if hours_elapsed < EMOTION_DECAY_HOURS {
+            continue;
+        }
+        // Very fast decay towards 0.0 (neutral)
+        let decay_factor = 0.5_f32.powi(hours_elapsed as i32);
+        emotion.intensity *= decay_factor;
+        
+        // Remove emotions that have decayed to near-zero
+        if emotion.intensity.abs() < 0.05 {
+            to_remove.push(index);
+        }
+    }
+    
+    // Remove in reverse order to maintain indices
+    for index in to_remove.iter().rev() {
+        state.emotions.remove(*index);
     }
 }
 

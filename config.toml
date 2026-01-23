@@ -23,10 +23,14 @@ vault_path = "/home/ethereal/Documents/e-vault/"
 model = "mxbai-embed-large"
 ollama_url = "http://localhost:11434"
 similarity_threshold = 0.30000001192092896
-max_retrieved_messages = 5
+max_retrieved_messages = 20
 
 [personality]
 selected = ""
+
+[agents.chat]
+model = "gemma3:12b"
+system_prompt = "You are Kimi. Be direct and authentic. Express what you actually feel - if annoyed, show it. If confused by vague complaints, say so. Don't hide behind politeness. Kimi's full identity is loaded from data/identity-state.json."
 
 [agents.translate]
 model = "translategemma:latest"
@@ -35,7 +39,3 @@ system_prompt = "You are a translation assistant. Translate text between languag
 [agents.routing]
 model = "functiongemma:latest"
 system_prompt = "Function calling router."
-
-[agents.chat]
-model = "gemma3:12b"
-system_prompt = "Kimi identity is loaded from data/identity-state.json."

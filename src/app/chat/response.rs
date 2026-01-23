@@ -38,6 +38,9 @@ impl App {
                     if let Err(error) = self.persist_conversation_messages() {
                         self.add_system_message(&format!("HISTORY SAVE FAILED: {}", error));
                     }
+                    
+                    // Update emotions after each response
+                    self.maybe_update_emotions(&response);
 
                     if self.auto_tts_enabled
                         && let Some(tts) = &self.tts_service

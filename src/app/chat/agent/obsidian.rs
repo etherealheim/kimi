@@ -3,7 +3,7 @@ use crate::services::{dates, obsidian};
 use color_eyre::Result;
 use std::path::Path;
 
-const MAX_OBSIDIAN_CONTEXT_CHARS: usize = 8000;
+const MAX_OBSIDIAN_CONTEXT_CHARS: usize = 32000;
 
 pub struct ObsidianContext {
     pub content: String,

@@ -6,7 +6,11 @@ Kimi is an experimental Rust TUI chat assistant. `Vibe-coded`, but with good int
 
 #### Upcoming Features
 
-- [ ] Evolving Personality System - An adaptive personality system that learns and evolves based on user interactions
+- [x] v0.6.0 Evolving Personality System - An adaptive personality system that learns and evolves based on user interactions
+    - Identity has Core belief that defines the psyche
+    - Traits emerge, disappear and are tweaked based on the conversations. After longer period of time they decay towards the center.
+    - Dreams emerge and disappear, they are aspirations of the AI model.
+    - Emotions have highest multiplier, they can come fast, they can disappear fast
 
 #### Quick Start
 1. Install Rust by following the instructions at https://www.rust-lang.org/tools/install.
