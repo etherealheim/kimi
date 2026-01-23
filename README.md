@@ -1,38 +1,30 @@
-Kimi is an experimental Rust TUI chat assistant.
+Kimi is an experimental Rust TUI chat assistant. `Vibe-coded`, but with good intentions.
 
 ## Quick Start
+1. Install Rust by following the instructions at https://www.rust-lang.org/tools/install.
 
-1. **Clone the repository**
-   ```bash
-   git clone <repo-url>
-   cd kimi
-   ```
+2. Install Ollama by following the official guidance at https://ollama.com/download.
 
-2. **Set up local configuration** (optional - for API services)
-   ```bash
-   cp config.local.toml.example config.local.toml
-   # Edit config.local.toml with your API keys
-   ```
+3. Using Ollama, download the required models:
+   - Run: `ollama pull gemma3:12b` - Choose any model you like
+   - Run: `ollama pull functiongemma:latest` - Required for deciding intentions
+   - Run: `ollama pull translategemma:latest` - non-mandatory, specialized
 
-3. **Run the app**
-   ```bash
-   cargo run
-   ```
+4. Obtain API keys for ElevenLabs, Venice, Gab, and Brave Search as needed.
+
+5. Rename a file named `config.local.toml.example` to `config.local.toml` in the project root and enter your API keys
+
+6. Define your personality by editing the file at `data/personalities/My personality.md` from `data/personalities/My personality.template.md`.
+
 
 The app works out of the box with Ollama (local models). API keys for ElevenLabs, Venice, Gab, and Brave Search are optional.
-
-See [CONFIG.md](CONFIG.md) for detailed configuration documentation.
 
 ## Database
 
 The application uses SurrealDB (RocksDB backend) for conversation history and embeddings. The database:
 
-- **Location**: `./data/kimi.db/` (local to your clone)
-- **Auto-initializes**: Database and schema are created automatically on first run
+- **Location**: `./data/kimi.db/`
 - **Not tracked in git**: Your conversation history stays private and local
-- **Fresh on clone**: Each new clone gets a clean database
-
-No setup required - just run the app and the database will be ready.
 
 ## Upcoming Features
 

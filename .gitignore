@@ -13,16 +13,5 @@ data/history.db
 # Personal data
 data/personalities/My personality.md
 
-# Editor and OS files
-.DS_Store
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-.vim/
-
-# Temporary files
-temp/
-*.tmp
-*.log
+# Todo list
+my-to-do.md
