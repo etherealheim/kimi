@@ -1,3 +1,4 @@
+use crate::agents::brave::{self, BraveSearchParams};
 use crate::app::chat::agent::intent::QueryIntent;
 
 pub struct SearchContext {
@@ -11,7 +12,10 @@ pub struct SearchSnapshotRequest<'a> {
 
 #[derive(Debug, Clone)]
 enum SearchAction {
-    BraveSearch { query: String },
+    BraveSearch {
+        query: String,
+        freshness: Option<String>,
+    },
 }
 
 impl SearchContext {
@@ -25,10 +29,11 @@ pub fn enrich_prompt_with_search_snapshot(
     prompt_lines: &mut Vec<String>,
     request: SearchSnapshotRequest<'_>,
 ) -> Option<String> {
-    let action = select_search_action(request)?;
+    let freshness = detect_freshness(request.query);
+    let action = select_search_action(request, freshness)?;
     match action {
-        SearchAction::BraveSearch { query } => {
-            append_brave_search_results_snapshot(context, prompt_lines, &query)
+        SearchAction::BraveSearch { query, freshness } => {
+            append_brave_search_results_snapshot(context, prompt_lines, &query, freshness)
         }
     }
 }
@@ -37,6 +42,7 @@ fn append_brave_search_results_snapshot(
     context: &SearchContext,
     prompt_lines: &mut Vec<String>,
     query: &str,
+    freshness: Option<String>,
 ) -> Option<String> {
     if context.brave_key.trim().is_empty() {
         return Some(
@@ -44,11 +50,20 @@ fn append_brave_search_results_snapshot(
                 .to_string(),
         );
     }
-    match crate::agents::brave::search(&context.brave_key, query) {
+
+    let params = BraveSearchParams {
+        freshness,
+        ..BraveSearchParams::default()
+    };
+
+    match brave::search(&context.brave_key, query, &params) {
         Ok(results) => {
             if results.is_empty() {
                 return Some("I couldn't find any live search results for that.".to_string());
             }
+
+            let formatted = brave::format_results_for_llm(&results);
+
             prompt_lines.push(
                 "All temperatures must be in Celsius (metric units). Do not use Fahrenheit."
                     .to_string(),
@@ -62,14 +77,13 @@ fn append_brave_search_results_snapshot(
             );
             prompt_lines.push(format!(
                 "Brave search results for \"{}\":\n{}",
-                query, results
+                query, formatted
             ));
             None
         }
         Err(error) => Some(format!("Live search failed: {}", error)),
     }
 }
-
 
 pub(crate) fn should_use_brave_search(query: &str) -> bool {
     let trimmed = query.trim();
@@ -108,7 +122,7 @@ pub(crate) fn should_use_brave_search(query: &str) -> bool {
         return true;
     }
 
-    let has_time_cue = ["2024", "2025", "this week", "this month"]
+    let has_time_cue = ["2024", "2025", "2026", "this week", "this month"]
         .iter()
         .any(|term| lowered.contains(term));
     if has_time_cue {
@@ -116,11 +130,16 @@ pub(crate) fn should_use_brave_search(query: &str) -> bool {
     }
 
     let looks_like_question = lowered.contains('?') || lowered.starts_with("what ");
-    let has_location = ["in ", "near ", "at "].iter().any(|token| lowered.contains(token));
+    let has_location = ["in ", "near ", "at "]
+        .iter()
+        .any(|token| lowered.contains(token));
     looks_like_question && has_location
 }
 
-fn select_search_action(request: SearchSnapshotRequest<'_>) -> Option<SearchAction> {
+fn select_search_action(
+    request: SearchSnapshotRequest<'_>,
+    freshness: Option<String>,
+) -> Option<SearchAction> {
     if request.intent.is_personal_recap
         || request.intent.is_week_note
         || request.intent.is_note_lookup
@@ -131,14 +150,50 @@ fn select_search_action(request: SearchSnapshotRequest<'_>) -> Option<SearchActi
     if request.intent.is_external_event || should_use_brave_search(request.query) {
         return Some(SearchAction::BraveSearch {
             query: request.query.to_string(),
+            freshness,
         });
     }
     None
 }
 
 pub fn should_mark_searching_for_intent(query: &str, intent: QueryIntent) -> bool {
+    let freshness = detect_freshness(query);
     let request = SearchSnapshotRequest { query, intent };
-    select_search_action(request).is_some()
+    select_search_action(request, freshness).is_some()
+}
+
+/// Detects the appropriate freshness filter based on time-related cues in the query.
+///
+/// Returns a Brave API freshness parameter:
+/// - "pd" for past day (today, now, this morning)
+/// - "pw" for past week (this week, recent)
+/// - "pm" for past month (this month)
+/// - "py" for past year (this year, 2026)
+/// - None for no time filtering
+fn detect_freshness(query: &str) -> Option<String> {
+    let lowered = query.to_lowercase();
+
+    let day_cues = ["today", "right now", "this morning", "this evening", "tonight"];
+    if day_cues.iter().any(|cue| lowered.contains(cue)) {
+        return Some("pd".to_string());
+    }
+
+    let week_cues = ["this week", "recent", "recently", "past few days"];
+    if week_cues.iter().any(|cue| lowered.contains(cue)) {
+        return Some("pw".to_string());
+    }
+
+    let month_cues = ["this month"];
+    if month_cues.iter().any(|cue| lowered.contains(cue)) {
+        return Some("pm".to_string());
+    }
+
+    let year_cues = ["this year", "2026"];
+    if year_cues.iter().any(|cue| lowered.contains(cue)) {
+        return Some("py".to_string());
+    }
+
+    None
 }
 
 fn looks_like_entity_query(query: &str) -> bool {
@@ -150,8 +205,10 @@ fn looks_like_entity_query(query: &str) -> bool {
     if word_count > 4 {
         return false;
     }
-    let has_separator =
-        trimmed.contains('-') || trimmed.contains('.') || trimmed.contains('/') || trimmed.contains(':');
+    let has_separator = trimmed.contains('-')
+        || trimmed.contains('.')
+        || trimmed.contains('/')
+        || trimmed.contains(':');
     let has_digit = trimmed.chars().any(|character| character.is_ascii_digit());
     let has_uppercase = trimmed.chars().any(|character| character.is_ascii_uppercase());
     has_separator || has_digit || (has_uppercase && word_count <= 3)
@@ -175,4 +232,3 @@ fn looks_like_weather_question(lowered: &str) -> bool {
         })
     })
 }
-

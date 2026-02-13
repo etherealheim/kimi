@@ -1,8 +1,10 @@
 use color_eyre::Result;
 use reqwest::blocking::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::thread::sleep;
 use std::time::Duration;
+
+use crate::agents::openai_compat::{self, ChatResponse, ToolDefinition};
 
 const VENICE_MODELS_URL: &str = "https://api.venice.ai/api/v1/models?type=text";
 const VENICE_CHAT_URL: &str = "https://api.venice.ai/api/v1/chat/completions";
@@ -30,57 +32,15 @@ pub fn fetch_text_models(api_key: &str) -> Result<Vec<String>> {
     Ok(payload.data.into_iter().map(|model| model.id).collect())
 }
 
-#[derive(Debug, Deserialize)]
-struct VeniceChatResponse {
-    choices: Vec<VeniceChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-struct VeniceChoice {
-    message: VeniceMessage,
-}
-
-#[derive(Debug, Deserialize)]
-struct VeniceMessage {
-    content: String,
-}
-
-#[derive(Debug, Serialize)]
-struct VeniceChatRequest {
-    model: String,
-    messages: Vec<VeniceChatMessage>,
-    stream: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct VeniceChatMessage {
-    role: String,
-    content: String,
-}
-
 pub fn chat(api_key: &str, model: &str, messages: &[crate::agents::ChatMessage]) -> Result<String> {
-    let chat_messages = messages
-        .iter()
-        .map(|msg| VeniceChatMessage {
-            role: match msg.role {
-                crate::agents::MessageRole::System => "system".to_string(),
-                crate::agents::MessageRole::User => "user".to_string(),
-                crate::agents::MessageRole::Assistant => "assistant".to_string(),
-            },
-            content: msg.content.clone(),
-        })
-        .collect();
-
-    let request = VeniceChatRequest {
+    let request = openai_compat::OpenAIChatRequest {
         model: model.to_string(),
-        messages: chat_messages,
+        messages: openai_compat::convert_messages(messages),
         stream: false,
+        tools: None,
     };
 
-    let client = Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(60))
-        .build()?;
+    let client = openai_compat::build_client()?;
     let mut last_error: Option<color_eyre::Report> = None;
     let delays = [200, 500, 1000];
     for (attempt, delay) in delays.iter().enumerate() {
@@ -94,23 +54,90 @@ pub fn chat(api_key: &str, model: &str, messages: &[crate::agents::ChatMessage])
             Ok(response) => {
                 let status = response.status();
                 if status.is_success() {
-                    let payload: VeniceChatResponse = response.json()?;
-                    return payload
-                        .choices
-                        .first()
-                        .map(|choice| choice.message.content.clone())
-                        .ok_or_else(|| color_eyre::eyre::eyre!("Venice response missing content"));
+                    let payload: openai_compat::OpenAIChatResponse = response.json()?;
+                    return openai_compat::extract_reply(payload, "Venice");
                 }
 
+                let details = response.text().unwrap_or_default();
                 if status.as_u16() == 429 || status.as_u16() >= 500 {
-                    let details = response.text().unwrap_or_default();
                     last_error = Some(color_eyre::eyre::eyre!(
                         "Venice API error ({}), retrying... {}",
                         status,
                         details
                     ));
                 } else {
-                    let details = response.text().unwrap_or_default();
+                    return Err(color_eyre::eyre::eyre!(
+                        "Venice API error: {} {}",
+                        status,
+                        details
+                    ));
+                }
+            }
+            Err(error) => {
+                last_error = Some(color_eyre::eyre::eyre!(
+                    "Venice request error: {}",
+                    error
+                ));
+            }
+        }
+
+        if attempt < delays.len() - 1 {
+            sleep(Duration::from_millis(*delay));
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        color_eyre::eyre::eyre!("Venice request failed after retries")
+    }))
+}
+
+/// Sends a chat request with native tool calling support
+/// Returns a ChatResponse with both content and any tool calls the model wants to make
+pub fn chat_with_tools(
+    api_key: &str,
+    model: &str,
+    messages: &[crate::agents::ChatMessage],
+    tools: &[ToolDefinition],
+) -> Result<ChatResponse> {
+    let tools_payload = if tools.is_empty() {
+        None
+    } else {
+        Some(tools.to_vec())
+    };
+
+    let request = openai_compat::OpenAIChatRequest {
+        model: model.to_string(),
+        messages: openai_compat::convert_messages(messages),
+        stream: false,
+        tools: tools_payload,
+    };
+
+    let client = openai_compat::build_client()?;
+    let mut last_error: Option<color_eyre::Report> = None;
+    let delays = [200, 500, 1000];
+    for (attempt, delay) in delays.iter().enumerate() {
+        let response = client
+            .post(VENICE_CHAT_URL)
+            .bearer_auth(api_key)
+            .json(&request)
+            .send();
+
+        match response {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() {
+                    let payload: openai_compat::OpenAIChatResponse = response.json()?;
+                    return openai_compat::extract_chat_response(payload, "Venice");
+                }
+
+                let details = response.text().unwrap_or_default();
+                if status.as_u16() == 429 || status.as_u16() >= 500 {
+                    last_error = Some(color_eyre::eyre::eyre!(
+                        "Venice API error ({}), retrying... {}",
+                        status,
+                        details
+                    ));
+                } else {
                     return Err(color_eyre::eyre::eyre!(
                         "Venice API error: {} {}",
                         status,

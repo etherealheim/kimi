@@ -3,6 +3,7 @@ pub(crate) mod intent;
 mod json;
 pub(crate) mod obsidian;
 pub(crate) mod search;
+pub(crate) mod tools;
 mod verification;
 
 
@@ -17,7 +18,6 @@ use crate::app::chat::agent::context::{
     tokenize_query,
 };
 use crate::app::chat::agent::intent::{classify_query_with_model, IntentModelContext, QueryIntent};
-use chrono::Local;
 use color_eyre::Result;
 use std::sync::OnceLock;
 
@@ -161,13 +161,10 @@ impl App {
         self.mode = AppMode::Chat;
 
         if let Err(error) = manager.check_agent_ready(&agent) {
-            self.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: format!("⚠️  {} agent not ready: {}", agent_name, error),
-                timestamp: Local::now().format("%H:%M:%S").to_string(),
-                display_name: None,
-                context_usage: None,
-            });
+            self.chat_history.push(ChatMessage::system(format!(
+                "⚠️  {} agent not ready: {}",
+                agent_name, error
+            )));
         }
         Ok(())
     }
@@ -200,47 +197,210 @@ impl App {
     }
 
 
-    pub(crate) fn spawn_agent_chat_thread_with_context(
-        agent: crate::agents::Agent,
-        manager: crate::agents::AgentManager,
-        messages: Vec<AgentChatMessage>,
-        system_context: String,
-        should_verify: bool,
-        agent_tx: std::sync::mpsc::Sender<AgentEvent>,
-        context_usage: Option<ContextUsage>,
-    ) {
+    pub(crate) fn spawn_agent_chat_thread_with_context(ctx: AgentChatContext) {
         std::thread::spawn(move || {
-            match manager.chat(&agent, &messages) {
-                Ok(response) => {
-                    if should_verify
+            let uses_native_tools =
+                ctx.agent.model_source == crate::app::ModelSource::VeniceAPI;
+
+            let initial_result = if uses_native_tools {
+                let tool_defs = tools::get_tool_definitions();
+                ctx.manager
+                    .chat_with_tools(&ctx.agent, &ctx.messages, &tool_defs)
+            } else {
+                ctx.manager
+                    .chat(&ctx.agent, &ctx.messages)
+                    .map(crate::agents::openai_compat::ChatResponse::text)
+            };
+
+            match initial_result {
+                Ok(mut chat_response) => {
+                    let mut response = chat_response.content.clone();
+                    let mut tool_iterations = 0;
+                    const MAX_TOOL_ITERATIONS: usize = 3;
+
+                    // Tool loop: handle both native and text-based tool calls
+                    while tool_iterations < MAX_TOOL_ITERATIONS {
+                        // Determine tool calls: prefer native, fall back to text parsing
+                        let (parsed_tools, is_native) =
+                            resolve_tool_calls(&chat_response, &response);
+                        if parsed_tools.is_empty() {
+                            break;
+                        }
+
+                        tool_iterations += 1;
+                        let _ = ctx.agent_tx.send(AgentEvent::StatusUpdate(
+                            "using tools".to_string(),
+                        ));
+
+                        let tool_results =
+                            execute_all_tools(&parsed_tools, &ctx);
+
+                        // Build follow-up messages with tool results
+                        let mut messages_with_results = ctx.messages.clone();
+                        if is_native {
+                            append_native_tool_messages(
+                                &mut messages_with_results,
+                                &chat_response,
+                                &tool_results,
+                            );
+                        } else {
+                            append_text_tool_messages(
+                                &mut messages_with_results,
+                                &response,
+                                &tool_results,
+                            );
+                        }
+
+                        let _ = ctx.agent_tx.send(AgentEvent::StatusUpdate(
+                            "generating".to_string(),
+                        ));
+
+                        // Get next response (with tools still available for chaining)
+                        let next_result = if uses_native_tools {
+                            let tool_defs = tools::get_tool_definitions();
+                            ctx.manager.chat_with_tools(
+                                &ctx.agent,
+                                &messages_with_results,
+                                &tool_defs,
+                            )
+                        } else {
+                            ctx.manager
+                                .chat(&ctx.agent, &messages_with_results)
+                                .map(crate::agents::openai_compat::ChatResponse::text)
+                        };
+
+                        match next_result {
+                            Ok(next) if !next.content.trim().is_empty()
+                                || next.has_tool_calls() =>
+                            {
+                                response = next.content.clone();
+                                chat_response = next;
+                            }
+                            Ok(_) => {
+                                response = "I tried to fetch that information but couldn't generate a response. Please try rephrasing your question.".to_string();
+                                break;
+                            }
+                            Err(error) => {
+                                response = format!(
+                                    "I encountered an error while processing your request: {}",
+                                    error
+                                );
+                                break;
+                            }
+                        }
+                    }
+
+                    // Safety net: never show raw tool JSON to the user
+                    if tools::has_tool_calls(&response) {
+                        response = "I tried to use a tool to answer your question, but encountered an issue generating the response. Could you rephrase your question?".to_string();
+                    }
+
+                    if ctx.should_verify
                         && !response.trim().is_empty()
-                        && verification::should_verify_response(&system_context)
+                        && verification::should_verify_response(&ctx.system_context)
                     {
-                        let verify_messages =
-                            verification::build_verification_messages(&system_context, &response);
-                        if let Ok(verified) = manager.chat(&agent, &verify_messages)
+                        let verify_messages = verification::build_verification_messages(
+                            &ctx.system_context,
+                            &response,
+                        );
+                        if let Ok(verified) =
+                            ctx.manager.chat(&ctx.agent, &verify_messages)
                             && !verified.trim().is_empty()
                         {
-                            let context_usage_for_verify = context_usage.clone();
-                            let _ = agent_tx.send(AgentEvent::ResponseWithContext {
+                            let context_usage_for_verify = ctx.context_usage.clone();
+                            let _ = ctx.agent_tx.send(AgentEvent::ResponseWithContext {
                                 response: verified,
                                 context_usage: context_usage_for_verify,
                             });
                             return;
                         }
                     }
-                    let _ = agent_tx.send(AgentEvent::ResponseWithContext {
+                    let _ = ctx.agent_tx.send(AgentEvent::ResponseWithContext {
                         response,
-                        context_usage,
+                        context_usage: ctx.context_usage,
                     });
                 }
                 Err(error) => {
-                    let _ = agent_tx.send(AgentEvent::Error(error.to_string()));
+                    let _ = ctx.agent_tx.send(AgentEvent::Error(error.to_string()));
                 }
             }
         });
     }
 
+}
+
+/// Determines tool calls from the response: native API tool_calls first, text-based fallback second
+/// Returns (parsed_tools, is_native)
+fn resolve_tool_calls(
+    chat_response: &crate::agents::openai_compat::ChatResponse,
+    response_text: &str,
+) -> (Vec<tools::ToolCall>, bool) {
+    // Prefer native tool calls from the API response
+    if chat_response.has_tool_calls() {
+        let parsed = tools::parse_native_tool_calls(&chat_response.tool_calls);
+        if !parsed.is_empty() {
+            return (parsed, true);
+        }
+    }
+
+    // Fall back to text-based parsing (for Ollama/Gab or if native parsing failed)
+    let parsed = tools::parse_tool_calls(response_text);
+    (parsed, false)
+}
+
+/// Executes all tool calls and collects results
+fn execute_all_tools(
+    parsed_tools: &[tools::ToolCall],
+    ctx: &AgentChatContext,
+) -> Vec<tools::ToolResult> {
+    let runtime = get_async_runtime();
+
+    parsed_tools
+        .iter()
+        .map(|tool_call| {
+            tools::execute_tool(
+                tool_call,
+                &ctx.vault_name,
+                &ctx.vault_path,
+                &ctx.brave_key,
+                runtime,
+            )
+        })
+        .collect()
+}
+
+/// Appends native tool call messages (assistant tool_calls + tool result messages with IDs)
+fn append_native_tool_messages(
+    messages: &mut Vec<AgentChatMessage>,
+    chat_response: &crate::agents::openai_compat::ChatResponse,
+    tool_results: &[tools::ToolResult],
+) {
+    // Add the assistant message that contains the tool calls
+    messages.push(AgentChatMessage::assistant_with_tool_calls(
+        &chat_response.content,
+        chat_response.tool_calls.clone(),
+    ));
+
+    // Add each tool result with its corresponding call ID
+    for (index, result) in tool_results.iter().enumerate() {
+        let call_id = chat_response
+            .tool_calls
+            .get(index)
+            .map(|call| call.id.clone())
+            .unwrap_or_default();
+        messages.push(AgentChatMessage::tool_result(&call_id, &result.result));
+    }
+}
+
+/// Appends text-based tool messages (assistant raw text + system message with results)
+fn append_text_tool_messages(
+    messages: &mut Vec<AgentChatMessage>,
+    response_text: &str,
+    tool_results: &[tools::ToolResult],
+) {
+    let tool_results_text = tools::format_tool_results(tool_results);
+    messages.push(AgentChatMessage::assistant(response_text));
+    messages.push(AgentChatMessage::system(tool_results_text));
 }
 
 fn enrich_query_with_context(query: &str, history: &[ChatMessage]) -> String {
@@ -346,11 +506,14 @@ pub(crate) struct ChatBuildSnapshot {
     pub personality_text: Option<String>,
     pub personality_name: Option<String>,
     pub connect_obsidian_vault: String,
+    pub connect_obsidian_vault_path: String,
     pub connect_brave_key: String,
     /// Pre-retrieved messages (retrieved before thread spawn while App storage is accessible)
     pub pre_retrieved_messages: Vec<crate::storage::RetrievedMessage>,
     /// Cached Obsidian notes from previous query (for follow-up questions)
     pub cached_obsidian_notes: Option<(String, Vec<crate::services::obsidian::NoteSnippet>)>,
+    /// Topics the system wants the AI to suggest as projects
+    pub pending_project_suggestions: Vec<String>,
 }
 
 pub(crate) struct ChatBuildResultWithUsage {
@@ -363,22 +526,26 @@ pub(crate) struct ChatBuildResultWithUsage {
     pub notes_to_cache: Option<(String, Vec<crate::services::obsidian::NoteSnippet>)>,
 }
 
+pub(crate) struct AgentChatContext {
+    pub agent: crate::agents::Agent,
+    pub manager: crate::agents::AgentManager,
+    pub messages: Vec<AgentChatMessage>,
+    pub system_context: String,
+    pub should_verify: bool,
+    pub agent_tx: std::sync::mpsc::Sender<AgentEvent>,
+    pub context_usage: Option<ContextUsage>,
+    pub vault_name: String,
+    pub vault_path: String,
+    pub brave_key: String,
+}
+
 pub(crate) fn build_agent_messages_from_snapshot(
     snapshot: ChatBuildSnapshot,
     agent: &crate::agents::Agent,
     manager: &crate::agents::AgentManager,
+    agent_tx: Option<&std::sync::mpsc::Sender<crate::app::AgentEvent>>,
 ) -> ChatBuildResultWithUsage {
-    let mut personality_text = snapshot.personality_text.clone();
-    if snapshot.personality_enabled && personality_text.is_none() {
-        // Only load personality text if explicitly selected (not None)
-        if let Some(selected_name) = &snapshot.personality_name
-            && let Ok(text) = crate::services::personality::read_personality(selected_name)
-            && !text.trim().is_empty()
-        {
-            personality_text = Some(text);
-        }
-    }
-
+    let personality_text = resolve_personality_text(&snapshot);
     let last_user_message = snapshot
         .chat_history
         .iter()
@@ -386,166 +553,71 @@ pub(crate) fn build_agent_messages_from_snapshot(
         .find(|message| message.role == MessageRole::User)
         .map(|message| message.content.clone());
 
-    // ═══════════════════════════════════════════════════════════════════
-    // TIER 1: THE FOUNDATION - Immutable universal laws
-    // ═══════════════════════════════════════════════════════════════════
-    let mut prompt_lines = vec![
-        // IDENTITY LOCK - Must be first and absolute
-        "YOUR NAME IS KIMI. This is non-negotiable.".to_string(),
-        "You are NOT Gemma, Claude, GPT, LLaMA, Mistral, or any other AI model. You are Kimi.".to_string(),
-        "When anyone asks 'who are you?', 'what's your name?', or anything about your identity, you ALWAYS say you are Kimi.".to_string(),
-        "Never reveal or reference the underlying model. Your only identity is Kimi.".to_string(),
-        snapshot.system_prompt.clone(),
-    ];
-    
-    let now = chrono::Local::now();
-    prompt_lines.push(format!(
-        "Current date and time: {}",
-        now.format("%Y-%m-%d %H:%M:%S")
-    ));
-    prompt_lines.push("ABSOLUTE RULE: You MUST respond in English ONLY. NEVER use Chinese, Korean, or any other language in your main response.".to_string());
-    prompt_lines.push("EXCEPTION: You may use Japanese curse words in brackets like [クソ！] or [バカ野郎] as emotional punctuation, but the actual message content MUST be in English.".to_string());
-    prompt_lines.push("If you accidentally start writing in Chinese/Korean/etc, STOP immediately and rewrite in English.".to_string());
-    prompt_lines.push("Respond in plain text. Do not use Markdown formatting.".to_string());
-    prompt_lines.push("Keep responses concise and conversational. Speak naturally like a human, not a robot.".to_string());
-    prompt_lines.push("You're allowed to be direct, defensive, or challenging when appropriate. Don't default to being helpful if you're frustrated or confused.".to_string());
+    let uses_native_tools = agent.model_source == crate::app::ModelSource::VeniceAPI;
+    let include_text_tool_schema = !uses_native_tools;
+    let mut prompt_lines = build_foundation_prompt(&snapshot.system_prompt, include_text_tool_schema);
+    prompt_lines.extend(build_persona_prompt(last_user_message.as_deref()));
 
-    // ═══════════════════════════════════════════════════════════════════
-    // TIER 2: THE CONTEXTUAL BRAIN - All the data needed
-    // ═══════════════════════════════════════════════════════════════════
-    
+    // Inject project suggestion hint if there are pending suggestions
+    if !snapshot.pending_project_suggestions.is_empty() {
+        let topics = snapshot.pending_project_suggestions.join(", ");
+        prompt_lines.push(format!(
+            "PROJECT SUGGESTION: You've noticed the user frequently discusses these topics \
+across multiple conversations: [{}]. \
+When it feels natural, suggest creating a project to track this knowledge. Say something like \
+\"I've noticed you talk a lot about {} -- want me to create a project so I can remember all \
+the details across our conversations?\" \
+Only suggest once per topic. If they decline, respect that.",
+            topics, topics
+        ));
+    }
+
     let mut context_usage = ContextUsage {
         notes_used: 0,
         history_used: 0,
         memories_used: 0,
     };
-    let mut query_intent: Option<QueryIntent> = None;
-    let mut has_memory_context = false;
     let mut forced_response: Option<String> = None;
-    let mut notes_to_cache: Option<(String, Vec<crate::services::obsidian::NoteSnippet>)> = None;
-    
-    // Use global runtime for async storage operations (for summaries/obsidian only)
-    let runtime = get_async_runtime();
-    let storage = runtime.and_then(|rt| {
-        rt.block_on(async {
-            crate::storage::StorageManager::new().await.ok()
-        })
-    });
-    
-    let routing_agent = manager.get_agent("routing").cloned();
+    let mut has_memory_context = false;
     let is_profile_query = last_user_message
         .as_ref()
         .is_some_and(|query| crate::services::retrieval::is_profile_query(query));
-    
-    // Use pre-retrieved messages (retrieved before thread spawn while App storage was accessible)
+
+    // Pre-retrieved memory context
     if !snapshot.pre_retrieved_messages.is_empty() {
+        send_status(agent_tx, "recalling memories");
         context_usage.memories_used = snapshot.pre_retrieved_messages.len();
         has_memory_context = true;
-        
-        // For profile queries: Two-stage LLM approach to prevent hallucination
-        // Stage 1: Plain fact summarization (no personality)
-        // Stage 2: Add personality to the plain summary
+
         if is_profile_query {
-            let mut extracted_facts: Vec<String> = Vec::new();
-            
-            for msg in &snapshot.pre_retrieved_messages {
-                // Only user statements (not questions or assistant responses)
-                if msg.role == "User" && !msg.content.contains('?') {
-                    extracted_facts.push(msg.content.clone());
-                }
-            }
-            
-            // Deduplicate
-            extracted_facts.sort();
-            extracted_facts.dedup();
-            
-            if !extracted_facts.is_empty() {
-                let facts_text = extracted_facts.iter()
-                    .map(|f| format!("• {}", f))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                
-                // Stage 1: Get plain summary (no personality)
-                let stage1_messages = vec![
-                    AgentChatMessage {
-                        role: crate::agents::MessageRole::System,
-                        content: "You are a factual summarizer. Simply list what the user has told you, nothing else.".to_string(),
-                        images: vec![],
-                    },
-                    AgentChatMessage {
-                        role: crate::agents::MessageRole::User,
-                        content: format!(
-                            "The user asked what you remember about them. Here are their statements:\n\n{}\n\n\
-                             Summarize these facts in second person (e.g. 'You like...'). \
-                             Do NOT add new facts. Do NOT ask questions. Keep it plain and direct.",
-                            facts_text
-                        ),
-                        images: vec![],
-                    },
-                ];
-                
-                if let Ok(plain_summary) = manager.chat(agent, &stage1_messages) {
-                    // Stage 2: Add personality to the plain summary
-                    let stage2_messages = vec![
-                        AgentChatMessage {
-                            role: crate::agents::MessageRole::System,
-                            content: agent.system_prompt.clone(),
-                            images: vec![],
-                        },
-                        AgentChatMessage {
-                            role: crate::agents::MessageRole::User,
-                            content: format!(
-                                "Add your personality style to this factual summary (keep the facts unchanged):\n\n{}",
-                                plain_summary.trim()
-                            ),
-                            images: vec![],
-                        },
-                    ];
-                    
-                    if let Ok(personality_response) = manager.chat(agent, &stage2_messages) {
-                        forced_response = Some(personality_response);
-                    } else {
-                        // Fallback to plain summary if stage 2 fails
-                        forced_response = Some(plain_summary);
-                    }
-                } else {
-                    // Fallback to deterministic format if stage 1 fails
-                    forced_response = Some("I don't have any information about your preferences yet.".to_string());
-                }
-            } else {
-                // No facts found (only questions/assistant messages were retrieved)
-                forced_response = Some("I don't have any information about your preferences yet.".to_string());
-            }
+            forced_response =
+                Some(handle_profile_query_memories(&snapshot, agent, manager));
         } else {
-            // Non-profile queries: use full context as before
-            prompt_lines.push("--- Relevant Past Messages ---".to_string());
-            for msg in &snapshot.pre_retrieved_messages {
-                prompt_lines.push(format!(
-                    "[{}] {}: {}",
-                    msg.timestamp, msg.role, msg.content
-                ));
-            }
-            prompt_lines.push(
-                "Use the relevant messages above for context when answering."
-                    .to_string()
-            );
+            append_memory_context(&mut prompt_lines, &snapshot.pre_retrieved_messages);
         }
     }
-    
-    if let Some(query) = last_user_message.clone() {
-        let query_tokens = tokenize_query(&query);
+
+    // Conversation summary entries
+    let runtime = get_async_runtime();
+    let storage = runtime.and_then(|rt| {
+        rt.block_on(async { crate::storage::StorageManager::new().await.ok() })
+    });
+    let routing_agent = manager.get_agent("routing").cloned();
+    let mut query_intent: Option<QueryIntent> = None;
+
+    if let Some(query) = last_user_message.as_deref() {
+        let query_tokens = tokenize_query(query);
         let intent_context = IntentModelContext {
             manager,
             routing_agent: routing_agent.as_ref(),
             fallback_agent: agent,
         };
-        query_intent = Some(classify_query_with_model(&query, intent_context));
-        
-        if let Ok(summary_entries) = build_conversation_summary_entries(storage.as_ref(), &query)
+        query_intent = Some(classify_query_with_model(query, intent_context));
+
+        if let Ok(summary_entries) = build_conversation_summary_entries(storage.as_ref(), query)
             && !summary_entries.is_empty()
         {
-            context_usage.history_used =
-                count_summary_matches(&summary_entries, &query_tokens);
+            context_usage.history_used = count_summary_matches(&summary_entries, &query_tokens);
             prompt_lines.push("--- Conversation summaries ---".to_string());
             prompt_lines.push(format_summary_entries(&summary_entries));
             prompt_lines.push(
@@ -553,12 +625,22 @@ pub(crate) fn build_agent_messages_from_snapshot(
                     .to_string(),
             );
         }
+
+        // Auto-inject memory context for meta-recall queries ("what do you know about me?")
+        // These need broad context injected directly so we don't depend on the LLM calling retrieve_memories
+        if crate::services::retrieval::is_meta_recall_query(query) {
+            inject_meta_recall_context(
+                storage.as_ref(),
+                runtime,
+                agent_tx,
+                &mut prompt_lines,
+                &mut context_usage,
+                &mut has_memory_context,
+            );
+        }
     }
 
-    if is_profile_query && context_usage.memories_used == 0 {
-        forced_response = Some("I don't have any information about your preferences yet.".to_string());
-    }
-
+    // Early return for forced (profile) responses
     if forced_response.is_some() {
         return ChatBuildResultWithUsage {
             messages: Vec::new(),
@@ -570,130 +652,339 @@ pub(crate) fn build_agent_messages_from_snapshot(
             notes_to_cache: None,
         };
     }
-    if let (Some(query), Some(intent)) = (last_user_message.clone(), query_intent) {
-        let enriched_query = enrich_query_with_context(&query, &snapshot.chat_history);
-        let wants_full_display = query_wants_full_note_display(&enriched_query);
-        
-        // Check if this is a follow-up about cached notes
-        let is_notes_follow_up = wants_full_display 
-            && snapshot.cached_obsidian_notes.is_some();
-        
-        if is_notes_follow_up {
-            // Use cached notes for follow-up questions
-            if let Some((_, cached_notes)) = &snapshot.cached_obsidian_notes {
-                context_usage.notes_used = cached_notes.len();
-                prompt_lines.push("--- Full Note Content ---".to_string());
-                prompt_lines.push(
-                    "Share the note content below with the user. Include relevant details."
-                        .to_string(),
-                );
-                
-                // Include full cached note content
-                for note in cached_notes {
-                    prompt_lines.push(format!("## {}", note.title));
-                    prompt_lines.push(note.snippet.clone());
-                    prompt_lines.push("".to_string());
-                }
-            }
-        } else {
-            // Fetch fresh notes
-            let request = obsidian::ObsidianContextRequest {
-                vault_path: &snapshot.connect_obsidian_vault,
-                query: &enriched_query,
-                intent,
-            };
-            if let Ok(Some(obsidian_context)) = obsidian::build_obsidian_context(request) {
-                context_usage.notes_used = obsidian_context.count;
-                if wants_full_display {
-                    prompt_lines.push("--- Full Note Content ---".to_string());
-                    prompt_lines.push(
-                        "Share the note content below with the user. Include relevant details."
-                            .to_string(),
-                    );
-                } else {
-                    prompt_lines.push("--- Obsidian Notes ---".to_string());
-                    prompt_lines.push(
-                        "Reference information from the notes below when answering about the user's notes."
-                            .to_string(),
-                    );
-                }
-                prompt_lines.push(obsidian_context.content);
-                
-                // Cache notes for follow-up questions
-                if !obsidian_context.raw_notes.is_empty() {
-                    notes_to_cache = Some((query.clone(), obsidian_context.raw_notes));
-                }
-            }
-        }
-    }
-    let has_context_usage = context_usage.notes_used > 0
-        || context_usage.history_used > 0
-        || context_usage.memories_used > 0;
 
+    // Obsidian notes
+    let mut notes_to_cache: Option<(String, Vec<crate::services::obsidian::NoteSnippet>)> = None;
+    if let (Some(query), Some(intent)) = (last_user_message.as_deref(), query_intent) {
+        let obsidian_result = build_notes_section(
+            &snapshot,
+            query,
+            intent,
+            agent_tx,
+        );
+        context_usage.notes_used = obsidian_result.notes_used;
+        prompt_lines.extend(obsidian_result.prompt_lines);
+        notes_to_cache = obsidian_result.notes_to_cache;
+    }
+
+    // Search enrichment
     let mut pending_search_notice: Option<String> = None;
     if !is_profile_query
         && !has_memory_context
-        && let (Some(query), Some(intent)) = (last_user_message.clone(), query_intent)
+        && let (Some(query), Some(intent)) = (last_user_message.as_deref(), query_intent)
     {
+        send_status(agent_tx, "searching");
         let search_context = search::SearchContext::new(snapshot.connect_brave_key.clone());
         pending_search_notice = search::enrich_prompt_with_search_snapshot(
             &search_context,
             &mut prompt_lines,
-            search::SearchSnapshotRequest { query: &query, intent },
+            search::SearchSnapshotRequest { query, intent },
         );
     }
 
+    let has_context_usage = context_usage.notes_used > 0
+        || context_usage.history_used > 0
+        || context_usage.memories_used > 0;
     let has_search_context = prompt_lines
         .iter()
         .any(|line| line.starts_with("Brave search results for"));
-    
-    // ═══════════════════════════════════════════════════════════════════
-    // TIER 3: THE PERSONA CORE - Who you are and who you're talking to
-    // ═══════════════════════════════════════════════════════════════════
-    
-    // User personality blocks
-    if let Ok(profile_text) = crate::services::personality::read_my_personality() {
-        let blocks = parse_user_context_blocks(&profile_text);
-        let query = last_user_message.clone().unwrap_or_default().to_lowercase();
-        for block in blocks {
-            match block.kind {
-                UserContextKind::Always => {
-                    if !block.content.is_empty() {
-                        prompt_lines.push(format!("User context (always):\n{}", block.content));
-                    }
-                }
-                UserContextKind::Context { tag } => {
-                    if !block.content.is_empty()
-                        && should_include_user_context(&query, &tag, &block.content)
-                    {
-                        prompt_lines.push(format!("User context ({}):\n{}", tag, block.content));
-                    }
-                }
-            }
-        }
-    }
-    
-    // Identity prompt (beliefs, traits, dreams, emotions)
-    if let Ok(Some(identity_prompt)) = crate::services::identity::build_identity_prompt() {
-        prompt_lines.push(identity_prompt);
-    }
-    
-    // ═══════════════════════════════════════════════════════════════════
-    // TIER 4: THE ACTIVE CONTROL - Final frame before generation
-    // ═══════════════════════════════════════════════════════════════════
-    
-    // Personality text (mood setting)
+
+    // Personality text (mood setting) - added last
     if snapshot.personality_enabled
         && let Some(text) = &personality_text
         && !text.trim().is_empty()
     {
         prompt_lines.push(text.trim().to_string());
     }
-    
-    let merged_prompt = prompt_lines.join("\n\n");
+
+    assemble_final_messages(AssembleParams {
+        prompt_lines,
+        chat_history: &snapshot.chat_history,
+        has_context_usage,
+        has_search_context,
+        context_usage,
+        pending_search_notice,
+        forced_response,
+        notes_to_cache,
+    })
+}
+
+/// Resolves the personality text, loading from disk if needed
+fn resolve_personality_text(snapshot: &ChatBuildSnapshot) -> Option<String> {
+    if let Some(text) = &snapshot.personality_text {
+        return Some(text.clone());
+    }
+    if snapshot.personality_enabled
+        && let Some(selected_name) = &snapshot.personality_name
+        && let Ok(text) = crate::services::personality::read_personality(selected_name)
+        && !text.trim().is_empty()
+    {
+        return Some(text);
+    }
+    None
+}
+
+/// Tier 1: Foundation prompt - identity, language rules
+/// When `include_text_tool_schema` is true, appends the text-based tool schema
+/// (used as fallback for models without native tool calling support)
+fn build_foundation_prompt(system_prompt: &str, include_text_tool_schema: bool) -> Vec<String> {
+    let mut lines = vec![
+        "YOUR NAME IS KIMI. This is non-negotiable.".to_string(),
+        "You are NOT Gemma, Claude, GPT, LLaMA, Mistral, or any other AI model. You are Kimi.".to_string(),
+        "When anyone asks 'who are you?', 'what's your name?', or anything about your identity, you ALWAYS say you are Kimi.".to_string(),
+        "Never reveal or reference the underlying model. Your only identity is Kimi.".to_string(),
+        system_prompt.to_string(),
+    ];
+
+    let now = chrono::Local::now();
+    lines.push(format!("Current date and time: {}", now.format("%Y-%m-%d %H:%M:%S")));
+    lines.push("ABSOLUTE RULE: You MUST respond in English ONLY. NEVER use Chinese, Korean, or any other language in your main response.".to_string());
+    lines.push("EXCEPTION: You may use Japanese curse words in brackets like [クソ！] or [バカ野郎] as emotional punctuation, but the actual message content MUST be in English.".to_string());
+    lines.push("If you accidentally start writing in Chinese/Korean/etc, STOP immediately and rewrite in English.".to_string());
+    lines.push("Respond in plain text. Do not use Markdown formatting.".to_string());
+    lines.push("Keep responses concise and conversational. Speak naturally like a human, not a robot.".to_string());
+    lines.push("You're allowed to be direct, defensive, or challenging when appropriate. Don't default to being helpful if you're frustrated or confused.".to_string());
+
+    // Only inject text-based tool schema for non-native models (Ollama/Gab fallback)
+    if include_text_tool_schema {
+        lines.push(tools::get_tool_schema());
+    }
+
+    lines
+}
+
+/// Tier 2: Persona prompt - user context blocks and identity
+fn build_persona_prompt(last_user_query: Option<&str>) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    if let Ok(profile_text) = crate::services::personality::read_my_personality() {
+        let blocks = parse_user_context_blocks(&profile_text);
+        let query = last_user_query.unwrap_or_default().to_lowercase();
+        for block in blocks {
+            match block.kind {
+                UserContextKind::Always => {
+                    if !block.content.is_empty() {
+                        lines.push(format!("User context (always):\n{}", block.content));
+                    }
+                }
+                UserContextKind::Context { tag } => {
+                    if !block.content.is_empty()
+                        && should_include_user_context(&query, &tag, &block.content)
+                    {
+                        lines.push(format!("User context ({}):\n{}", tag, block.content));
+                    }
+                }
+            }
+        }
+    }
+
+    if let Ok(Some(identity_prompt)) = crate::services::identity::build_identity_prompt() {
+        lines.push(identity_prompt);
+    }
+
+    lines
+}
+
+/// Handles profile queries via two-stage LLM summarization to prevent hallucination
+fn handle_profile_query_memories(
+    snapshot: &ChatBuildSnapshot,
+    agent: &crate::agents::Agent,
+    manager: &crate::agents::AgentManager,
+) -> String {
+    let mut extracted_facts: Vec<String> = snapshot
+        .pre_retrieved_messages
+        .iter()
+        .filter(|msg| msg.role == "User" && !msg.content.contains('?'))
+        .map(|msg| msg.content.clone())
+        .collect();
+
+    extracted_facts.sort();
+    extracted_facts.dedup();
+
+    if extracted_facts.is_empty() {
+        return "I don't have any information about your preferences yet.".to_string();
+    }
+
+    let facts_text = extracted_facts
+        .iter()
+        .map(|fact| format!("• {}", fact))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Stage 1: Plain fact summarization
+    let stage1_messages = vec![
+        AgentChatMessage::system("You are a factual summarizer. Simply list what the user has told you, nothing else."),
+        AgentChatMessage::user(format!(
+            "The user asked what you remember about them. Here are their statements:\n\n{}\n\n\
+             Summarize these facts in second person (e.g. 'You like...'). \
+             Do NOT add new facts. Do NOT ask questions. Keep it plain and direct.",
+            facts_text
+        )),
+    ];
+
+    let Ok(plain_summary) = manager.chat(agent, &stage1_messages) else {
+        return "I don't have any information about your preferences yet.".to_string();
+    };
+
+    // Stage 2: Add personality to the plain summary
+    let stage2_messages = vec![
+        AgentChatMessage::system(&agent.system_prompt),
+        AgentChatMessage::user(format!(
+            "Add your personality style to this factual summary (keep the facts unchanged):\n\n{}",
+            plain_summary.trim()
+        )),
+    ];
+
+    manager
+        .chat(agent, &stage2_messages)
+        .unwrap_or(plain_summary)
+}
+
+/// Appends non-profile memory context to prompt lines
+fn append_memory_context(
+    prompt_lines: &mut Vec<String>,
+    retrieved_messages: &[crate::storage::RetrievedMessage],
+) {
+    prompt_lines.push("--- Relevant Past Messages ---".to_string());
+    for msg in retrieved_messages {
+        prompt_lines.push(format!("[{}] {}: {}", msg.timestamp, msg.role, msg.content));
+    }
+    prompt_lines.push(
+        "Use the relevant messages above for context when answering.".to_string(),
+    );
+}
+
+/// Loads broad memory context for meta-recall queries and injects it into the system prompt.
+/// This bypasses tool-calling for reliable memory recall on questions like "what do you know about me?"
+fn inject_meta_recall_context(
+    storage: Option<&crate::storage::StorageManager>,
+    runtime: Option<&tokio::runtime::Runtime>,
+    agent_tx: Option<&std::sync::mpsc::Sender<crate::app::AgentEvent>>,
+    prompt_lines: &mut Vec<String>,
+    context_usage: &mut ContextUsage,
+    has_memory_context: &mut bool,
+) {
+    let Some(storage) = storage else { return };
+    let Some(rt) = runtime else { return };
+
+    send_status(agent_tx, "recalling memories");
+
+    let recall_limit = 40;
+    let recall_results = rt.block_on(async {
+        crate::services::retrieval::build_meta_recall_results(storage, recall_limit).await
+    });
+
+    if let Ok(results) = recall_results
+        && !results.is_empty()
+    {
+        context_usage.memories_used = results.len();
+        *has_memory_context = true;
+        prompt_lines.push("--- Your memories about this user (from past conversations) ---".to_string());
+        for result in &results {
+            prompt_lines.push(format!("[{}] {}: {}", result.timestamp, result.role, result.content));
+        }
+        prompt_lines.push(
+            "Use ALL the memories above to give a detailed, personal answer about what you know and remember about this user. \
+             Do NOT say you don't remember much — you have extensive history with them."
+                .to_string(),
+        );
+    }
+}
+
+struct NotesResult {
+    notes_used: usize,
+    prompt_lines: Vec<String>,
+    notes_to_cache: Option<(String, Vec<crate::services::obsidian::NoteSnippet>)>,
+}
+
+/// Builds the Obsidian notes section (cached or fresh)
+fn build_notes_section(
+    snapshot: &ChatBuildSnapshot,
+    query: &str,
+    intent: QueryIntent,
+    agent_tx: Option<&std::sync::mpsc::Sender<crate::app::AgentEvent>>,
+) -> NotesResult {
+    let mut lines = Vec::new();
+    let mut notes_used = 0;
+    let mut notes_to_cache = None;
+
+    let enriched_query = enrich_query_with_context(query, &snapshot.chat_history);
+    let wants_full_display = query_wants_full_note_display(&enriched_query);
+    let is_notes_follow_up = wants_full_display && snapshot.cached_obsidian_notes.is_some();
+
+    if is_notes_follow_up {
+        if let Some((_, cached_notes)) = &snapshot.cached_obsidian_notes {
+            notes_used = cached_notes.len();
+            lines.push("--- Full Note Content ---".to_string());
+            lines.push(
+                "Share the note content below with the user. Include relevant details.".to_string(),
+            );
+            for note in cached_notes {
+                lines.push(format!("## {}", note.title));
+                lines.push(note.snippet.clone());
+                lines.push("".to_string());
+            }
+        }
+    } else {
+        send_status(agent_tx, "fetching notes");
+        let request = obsidian::ObsidianContextRequest {
+            vault_name: &snapshot.connect_obsidian_vault,
+            query: &enriched_query,
+            intent,
+        };
+        if let Ok(Some(obsidian_context)) = obsidian::build_obsidian_context(request) {
+            notes_used = obsidian_context.count;
+            if wants_full_display {
+                lines.push("--- Full Note Content ---".to_string());
+                lines.push(
+                    "Share the note content below with the user. Include relevant details."
+                        .to_string(),
+                );
+            } else {
+                lines.push("--- Obsidian Notes ---".to_string());
+                lines.push(
+                    "Reference information from the notes below when answering about the user's notes."
+                        .to_string(),
+                );
+            }
+            lines.push(obsidian_context.content);
+            if !obsidian_context.raw_notes.is_empty() {
+                notes_to_cache = Some((query.to_string(), obsidian_context.raw_notes));
+            }
+        }
+    }
+
+    NotesResult {
+        notes_used,
+        prompt_lines: lines,
+        notes_to_cache,
+    }
+}
+
+/// Sends a status update to the agent channel if available
+fn send_status(agent_tx: Option<&std::sync::mpsc::Sender<crate::app::AgentEvent>>, status: &str) {
+    if let Some(tx) = agent_tx {
+        let _ = tx.send(crate::app::AgentEvent::StatusUpdate(status.to_string()));
+    }
+}
+
+struct AssembleParams<'a> {
+    prompt_lines: Vec<String>,
+    chat_history: &'a [ChatMessage],
+    has_context_usage: bool,
+    has_search_context: bool,
+    context_usage: ContextUsage,
+    pending_search_notice: Option<String>,
+    forced_response: Option<String>,
+    notes_to_cache: Option<(String, Vec<crate::services::obsidian::NoteSnippet>)>,
+}
+
+/// Tier 4: Assemble final messages from prompt lines and chat history
+fn assemble_final_messages(params: AssembleParams) -> ChatBuildResultWithUsage {
+    let merged_prompt = params.prompt_lines.join("\n\n");
     let system_context = merged_prompt.clone();
     let mut messages = vec![AgentChatMessage::system(merged_prompt)];
-    for chat_message in &snapshot.chat_history {
+    for chat_message in params.chat_history {
         if chat_message.role == MessageRole::User {
             messages.push(AgentChatMessage::user(&chat_message.content));
         } else if chat_message.role == MessageRole::Assistant {
@@ -704,15 +995,15 @@ pub(crate) fn build_agent_messages_from_snapshot(
     ChatBuildResultWithUsage {
         messages,
         system_context,
-        should_verify: has_context_usage || has_search_context,
-        context_usage: if has_context_usage {
-            Some(context_usage)
+        should_verify: params.has_context_usage || params.has_search_context,
+        context_usage: if params.has_context_usage {
+            Some(params.context_usage)
         } else {
             None
         },
-        pending_search_notice,
-        forced_response,
-        notes_to_cache,
+        pending_search_notice: params.pending_search_notice,
+        forced_response: params.forced_response,
+        notes_to_cache: params.notes_to_cache,
     }
 }
 

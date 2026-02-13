@@ -1,12 +1,44 @@
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
 
 const SEPARATOR: &str = "  ";
+
+/// Renders the standard "Kimi <ViewName>" header used across all views
+pub fn render_view_header(frame: &mut Frame, area: Rect, view_name: &str) {
+    render_view_header_with_extra(frame, area, view_name, vec![]);
+}
+
+/// Renders the standard header with optional extra spans after the view name
+pub fn render_view_header_with_extra(frame: &mut Frame, area: Rect, view_name: &str, extra: Vec<Span>) {
+    let mut spans = vec![
+        Span::raw(" "),
+        Span::styled(
+            "Kimi",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ", Style::default().fg(Color::DarkGray)),
+        Span::styled(view_name.to_string(), Style::default().fg(Color::Cyan)),
+    ];
+    spans.extend(extra);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(spans))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            )
+            .alignment(Alignment::Left),
+        area,
+    );
+}
 
 /// Configuration for text input rendering
 pub struct TextInputConfig<'a> {
@@ -178,6 +210,66 @@ fn build_input_spans(content: &str) -> Vec<Span<'static>> {
         ));
     }
     spans
+}
+
+/// Returns `" > "` when selected, `"   "` otherwise
+#[must_use]
+pub fn selection_prefix(is_selected: bool) -> &'static str {
+    if is_selected { " > " } else { "   " }
+}
+
+/// Returns the highlighted name style: black-on-cyan bold when selected, white otherwise
+#[must_use]
+pub fn selected_name_style(is_selected: bool) -> Style {
+    if is_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    }
+}
+
+/// Returns the secondary highlight style (no bold): black-on-cyan when selected, given fallback otherwise
+#[must_use]
+pub fn selected_secondary_style(is_selected: bool, fallback: Style) -> Style {
+    if is_selected {
+        Style::default().fg(Color::Black).bg(Color::Cyan)
+    } else {
+        fallback
+    }
+}
+
+/// Renders a centered modal overlay with a titled border.
+/// Returns the inner area (after border + margin) for the caller to render content into.
+pub fn render_modal_frame(
+    frame: &mut Frame,
+    parent: Rect,
+    width_pct: u16,
+    height_pct: u16,
+    title: &str,
+) -> Rect {
+    let area = crate::ui::utils::centered_rect(width_pct, height_pct, parent);
+    frame.render_widget(ratatui::widgets::Clear, area);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(vec![
+                Span::styled(" ", Style::default()),
+                Span::styled(
+                    title.to_string(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" ", Style::default()),
+            ]))
+            .border_style(Style::default().fg(Color::Cyan))
+            .style(Style::default().bg(Color::Black)),
+        area,
+    );
+    area
 }
 
 /// Renders a footer with mode indicator, keybindings, and status

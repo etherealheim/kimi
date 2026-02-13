@@ -460,6 +460,7 @@ fn contains_word(text: &str, word: &str) -> bool {
 }
 
 /// Checks if a date falls within a range (inclusive)
+#[allow(dead_code)]
 pub fn date_in_range(date: NaiveDate, range: DateRange) -> bool {
     date >= range.start && date <= range.end
 }
@@ -527,11 +528,14 @@ mod tests {
 
     #[test]
     fn test_date_for_iso_week() {
-        let date = date_for_iso_week(2026, 4).unwrap();
-        let iso = date.iso_week();
-        assert_eq!(iso.year(), 2026);
-        assert_eq!(iso.week(), 4);
-        assert_eq!(date.weekday(), Weekday::Mon);
+        if let Some(date) = date_for_iso_week(2026, 4) {
+            let iso = date.iso_week();
+            assert_eq!(iso.year(), 2026);
+            assert_eq!(iso.week(), 4);
+            assert_eq!(date.weekday(), Weekday::Mon);
+        } else {
+            panic!("valid ISO week should return a date");
+        }
     }
 
     #[test]

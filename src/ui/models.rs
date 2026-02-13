@@ -1,9 +1,9 @@
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState},
 };
 
 use crate::app::{App, ModelSource};
@@ -27,26 +27,7 @@ pub fn render_model_selection(f: &mut Frame, app: &App) {
 }
 
 fn render_model_header(f: &mut Frame, area: Rect) {
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Kimi",
-                Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Model Selection", Style::default().fg(Color::Cyan)),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        )
-        .alignment(Alignment::Left),
-        area,
-    );
+    components::render_view_header(f, area, "Model Selection");
 }
 
 fn render_model_list(f: &mut Frame, app: &App, area: Rect) {
@@ -97,10 +78,7 @@ fn render_model_list(f: &mut Frame, app: &App, area: Rect) {
 
                     // Row styles based on selection and availability
                     let name_style = if is_current {
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
+                        components::selected_name_style(true)
                     } else if model.is_available {
                         Style::default().fg(Color::White)
                     } else {
@@ -108,7 +86,7 @@ fn render_model_list(f: &mut Frame, app: &App, area: Rect) {
                     };
 
                     let checkbox_style = if is_current {
-                        Style::default().fg(Color::Black).bg(Color::Cyan)
+                        components::selected_secondary_style(true, Style::default())
                     } else if is_selected {
                         Style::default()
                             .fg(Color::Green)
@@ -124,7 +102,7 @@ fn render_model_list(f: &mut Frame, app: &App, area: Rect) {
                     };
 
                     let source_style = if is_current {
-                        Style::default().fg(Color::Black).bg(Color::Cyan)
+                        components::selected_secondary_style(true, Style::default())
                     } else if model.is_available {
                         Style::default().fg(Color::Blue)
                     } else {
@@ -133,7 +111,7 @@ fn render_model_list(f: &mut Frame, app: &App, area: Rect) {
 
                     items.push(ListItem::new(Line::from(vec![
                         Span::styled(
-                            if is_current { " > " } else { "   " },
+                            components::selection_prefix(is_current),
                             Style::default().fg(Color::Cyan),
                         ),
                         Span::styled(checkbox, checkbox_style),

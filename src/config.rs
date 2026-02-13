@@ -46,6 +46,7 @@ struct LocalApiConfig {
 
 #[derive(Debug, Deserialize)]
 struct LocalObsidianConfig {
+    vault_name: Option<String>,
     vault_path: Option<String>,
 }
 
@@ -85,6 +86,8 @@ pub struct BraveConfig {
 /// Obsidian vault configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ObsidianConfig {
+    pub vault_name: String,
+    #[serde(default)]
     pub vault_path: String,
 }
 
@@ -119,6 +122,9 @@ pub struct PersonalityConfig {
 pub struct AgentConfig {
     pub model: String,
     pub system_prompt: String,
+    /// Number of GPU layers to offload (None = auto, 0 = CPU only, positive = specific layer count)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_gpu: Option<i32>,
 }
 
 impl Default for Config {
@@ -137,6 +143,7 @@ impl Default for Config {
                     "{} You specialize in translation between languages.",
                     kimi_identity
                 ),
+                num_gpu: None,
             },
         );
 
@@ -145,6 +152,7 @@ impl Default for Config {
             AgentConfig {
                 model: "gemma3:12b".to_string(),
                 system_prompt: kimi_identity.to_string(),
+                num_gpu: None,
             },
         );
 
@@ -153,6 +161,7 @@ impl Default for Config {
             AgentConfig {
                 model: "functiongemma".to_string(),
                 system_prompt: "Function calling router.".to_string(),
+                num_gpu: None,
             },
         );
 
@@ -176,6 +185,7 @@ impl Default for Config {
                 api_key: String::new(),
             },
             obsidian: ObsidianConfig {
+                vault_name: String::new(),
                 vault_path: String::new(),
             },
             embeddings: EmbeddingsConfig::default(),
@@ -211,6 +221,15 @@ impl Config {
         if let Some(local) = Self::load_local_config()? {
             Self::apply_local_overrides(&mut config, &local);
         }
+
+        // Auto-resolve vault_path from vault_name via Obsidian's config
+        if config.obsidian.vault_path.trim().is_empty()
+            && !config.obsidian.vault_name.trim().is_empty()
+            && let Some(path) = resolve_vault_path_from_obsidian(&config.obsidian.vault_name)
+        {
+            config.obsidian.vault_path = path;
+        }
+
         Ok(config)
     }
 
@@ -277,11 +296,17 @@ impl Config {
         {
             config.gab.api_key = api_key.clone();
         }
-        if let Some(obsidian) = &local.obsidian
-            && let Some(vault_path) = &obsidian.vault_path
-            && !vault_path.trim().is_empty()
-        {
-            config.obsidian.vault_path = vault_path.clone();
+        if let Some(obsidian) = &local.obsidian {
+            if let Some(vault_name) = &obsidian.vault_name
+                && !vault_name.trim().is_empty()
+            {
+                config.obsidian.vault_name = vault_name.clone();
+            }
+            if let Some(vault_path) = &obsidian.vault_path
+                && !vault_path.trim().is_empty()
+            {
+                config.obsidian.vault_path = vault_path.clone();
+            }
         }
     }
 
@@ -293,4 +318,37 @@ impl Config {
         redacted.brave.api_key = String::new();
         redacted
     }
+}
+
+/// Resolves a vault filesystem path from its name by reading Obsidian's own config.
+/// Obsidian stores vault mappings in `~/.config/obsidian/obsidian.json`.
+fn resolve_vault_path_from_obsidian(vault_name: &str) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let config_path = PathBuf::from(&home)
+        .join(".config")
+        .join("obsidian")
+        .join("obsidian.json");
+
+    if !config_path.exists() {
+        return None;
+    }
+
+    let content = fs::read_to_string(&config_path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let vaults = parsed.get("vaults")?.as_object()?;
+
+    for (_id, vault_info) in vaults {
+        let path = vault_info.get("path")?.as_str()?;
+        // Match by checking if the path ends with the vault name
+        if path.ends_with(vault_name)
+            || PathBuf::from(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case(vault_name))
+        {
+            return Some(path.to_string());
+        }
+    }
+
+    None
 }

@@ -3,36 +3,14 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 
 use crate::app::App;
 use crate::ui::components;
-use crate::ui::utils::centered_rect;
-use std::path::Path;
-
 /// Render provider selection modal
 pub fn render_connect_providers(f: &mut Frame, app: &App) {
-    let area = centered_rect(50, 50, f.area());
-    f.render_widget(Clear, area);
-
-    f.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Line::from(vec![
-                Span::styled(" ", Style::default()),
-                Span::styled(
-                    "API Providers",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" ", Style::default()),
-            ]))
-            .border_style(Style::default().fg(Color::Cyan))
-            .style(Style::default().bg(Color::Black)),
-        area,
-    );
+    let area = components::render_modal_frame(f, f.area(), 50, 50, "API Providers");
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -65,18 +43,7 @@ pub fn render_connect_providers(f: &mut Frame, app: &App) {
                     ("configured", Style::default().fg(Color::Green), "●")
                 }
                 "Obsidian" if !app.connect_obsidian_vault.trim().is_empty() => {
-                    let is_valid = Path::new(&app.connect_obsidian_vault).is_dir();
-                    let status_style = if is_valid {
-                        Style::default().fg(Color::Green)
-                    } else {
-                        Style::default().fg(Color::Yellow)
-                    };
-                    let status_text = if is_valid {
-                        "configured"
-                    } else {
-                        "invalid path"
-                    };
-                    (status_text, status_style, "●")
+                    ("configured", Style::default().fg(Color::Green), "●")
                 }
                 "ElevenLabs" | "Venice AI" | "Gab AI" | "Brave Search" => {
                     ("not configured", Style::default().fg(Color::DarkGray), "○")
@@ -85,18 +52,11 @@ pub fn render_connect_providers(f: &mut Frame, app: &App) {
                 _ => ("unknown", Style::default().fg(Color::Red), "?"),
             };
 
-            let name_style = if selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
+            let name_style = components::selected_name_style(selected);
 
             ListItem::new(Line::from(vec![
                 Span::styled(
-                    if selected { " > " } else { "   " },
+                    components::selection_prefix(selected),
                     Style::default().fg(Color::Cyan),
                 ),
                 Span::styled(icon, status_style),
@@ -104,11 +64,7 @@ pub fn render_connect_providers(f: &mut Frame, app: &App) {
                 Span::styled(provider, name_style),
                 Span::styled(
                     format!("  {}", status_text),
-                    if selected {
-                        Style::default().fg(Color::Black).bg(Color::Cyan)
-                    } else {
-                        status_style
-                    },
+                    components::selected_secondary_style(selected, status_style),
                 ),
             ]))
         })
@@ -127,28 +83,9 @@ pub fn render_connect_providers(f: &mut Frame, app: &App) {
 
 /// Render API key input modal
 pub fn render_api_key_input(f: &mut Frame, app: &App) {
-    let area = centered_rect(70, 40, f.area());
-    f.render_widget(Clear, area);
-
     let provider_name = app.connect_current_provider.as_deref().unwrap_or("Unknown");
-
-    f.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Line::from(vec![
-                Span::styled(" ", Style::default()),
-                Span::styled(
-                    format!("{} API Key", provider_name),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" ", Style::default()),
-            ]))
-            .border_style(Style::default().fg(Color::Cyan))
-            .style(Style::default().bg(Color::Black)),
-        area,
-    );
+    let title = format!("{} API Key", provider_name);
+    let area = components::render_modal_frame(f, f.area(), 70, 40, &title);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -167,8 +104,8 @@ pub fn render_api_key_input(f: &mut Frame, app: &App) {
     let (display_value, title, placeholder) = if provider_name == "Obsidian" {
         (
             input_value.to_string(),
-            " Vault Path ".to_string(),
-            "Path to your Obsidian vault...",
+            " Vault Name ".to_string(),
+            "Obsidian vault name...",
         )
     } else {
         let masked = if key_len == 0 {
@@ -284,14 +221,14 @@ pub fn render_api_key_input(f: &mut Frame, app: &App) {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    " - Local vault for personal context",
+                    " - Local vault for personal context (CLI)",
                     Style::default().fg(Color::White),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("    Example: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("    Enter vault name as shown in ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    "/Users/you/Documents/Obsidian",
+                    "obsidian vaults",
                     Style::default().fg(Color::Blue),
                 ),
             ]),

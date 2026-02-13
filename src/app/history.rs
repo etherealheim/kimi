@@ -3,39 +3,23 @@ use crate::app::{App, AppMode, Navigable};
 use color_eyre::Result;
 
 impl App {
-    pub fn open_history(&mut self) {
-        // Change mode IMMEDIATELY for instant UI feedback
-        self.mode = AppMode::History;
-        self.history_selected_index = 0;
-        self.history_filter.clear();
-        self.history_filter_active = false;
-        self.history_delete_all_active = false;
-        
-        // Stop TTS immediately when opening history
-        if let Some(tts) = &self.tts_service {
-            tts.stop();
-        }
-        
-        // Load data after mode change (this may block but UI already changed)
-        let _ = self.ensure_storage();
-        self.load_history_list();
-        if let Some(conversation_id) = self.current_conversation_id.clone() {
-            self.select_history_conversation(&conversation_id);
-        }
-    }
-
     pub fn close_history(&mut self) {
         self.mode = AppMode::Chat;
         self.chat_history.clear();
         self.chat_input.clear();
         self.current_conversation_id = None;
-        self.loaded_conversation_message_count = None;
         self.personality_text = None;
         if let Some(agent) = &self.current_agent {
             let agent_name = agent.name.clone();
             let _ = self.load_agent(&agent_name);
         }
         self.history_delete_all_active = false;
+
+        // Clear summary animation so it doesn't bleed into the new chat.
+        // The background thread will still finish and save — we just stop showing the spinner.
+        self.summary_active = false;
+        self.summary_frame = 0;
+        self.last_summary_tick = None;
     }
 
     pub(crate) fn load_history_list(&mut self) {
@@ -46,12 +30,20 @@ impl App {
         let Some(runtime) = self.storage_runtime() else {
             return;
         };
+
+        let limit = self.history_page_size;
         self.history_conversations = if self.history_filter.is_empty() {
-            runtime
+            let loaded = runtime
                 .block_on(async {
-                    storage.load_conversations().await.ok()
+                    storage.load_conversations_with_limit(limit + 1).await.ok()
                 })
-                .unwrap_or_default()
+                .unwrap_or_default();
+
+            // Check if there are more by requesting limit+1
+            self.history_has_more = loaded.len() > limit;
+
+            // Return only the requested limit
+            loaded.into_iter().take(limit).collect()
         } else {
             runtime
                 .block_on(async {
@@ -59,9 +51,39 @@ impl App {
                 })
                 .unwrap_or_default()
         };
+
         if self.history_selected_index >= self.history_conversations.len() {
             self.history_selected_index = self.history_conversations.len().saturating_sub(1);
         }
+    }
+
+    pub fn load_more_history(&mut self) {
+        if !self.history_has_more || !self.history_filter.is_empty() {
+            return;
+        }
+
+        self.ensure_storage();
+        let Some(storage) = &self.storage else {
+            return;
+        };
+        let Some(runtime) = self.storage_runtime() else {
+            return;
+        };
+
+        let current_count = self.history_conversations.len();
+        let new_limit = current_count + self.history_page_size;
+
+        let loaded = runtime
+            .block_on(async {
+                storage.load_conversations_with_limit(new_limit + 1).await.ok()
+            })
+            .unwrap_or_default();
+
+        // Check if there are more
+        self.history_has_more = loaded.len() > new_limit;
+
+        // Update conversations
+        self.history_conversations = loaded.into_iter().take(new_limit).collect();
     }
 
     pub fn select_history_conversation(&mut self, conversation_id: &str) {
@@ -91,17 +113,8 @@ impl App {
         let conv_id = conv.id.clone();
         let agent_name = conv.agent_name.clone();
 
-        let storage = self
-            .storage
-            .as_ref()
-            .ok_or_else(|| color_eyre::eyre::eyre!("Storage not initialized"))?;
-        
-        let runtime = self
-            .storage_runtime()
-            .ok_or_else(|| color_eyre::eyre::eyre!("Storage runtime not initialized"))?;
-        let (_agent_name, messages) = runtime.block_on(async {
-            storage.load_conversation(&conv_id).await
-        })?;
+        let (storage, runtime) = self.storage_with_runtime()?;
+        let (_agent_name, messages) = runtime.block_on(storage.load_conversation(&conv_id))?;
 
         self.load_agent(&agent_name)?;
 
@@ -121,12 +134,6 @@ impl App {
             });
         }
 
-        // Track initial message count to detect if conversation was modified
-        let non_system_count = self.chat_history.iter()
-            .filter(|msg| msg.role != MessageRole::System)
-            .count();
-        self.loaded_conversation_message_count = Some(non_system_count);
-
         self.current_conversation_id = Some(conv_id);
         self.chat_scroll_offset = 0;
         self.mode = AppMode::Chat;
@@ -143,17 +150,8 @@ impl App {
             .get(self.history_selected_index)
             .ok_or_else(|| color_eyre::eyre::eyre!("Invalid conversation selection"))?;
         let conv_id = conv.id.clone();
-        let storage = self
-            .storage
-            .as_ref()
-            .ok_or_else(|| color_eyre::eyre::eyre!("Storage not initialized"))?;
-        
-        let runtime = self
-            .storage_runtime()
-            .ok_or_else(|| color_eyre::eyre::eyre!("Storage runtime not initialized"))?;
-        runtime.block_on(async {
-            storage.delete_conversation(&conv_id).await
-        })?;
+        let (storage, runtime) = self.storage_with_runtime()?;
+        runtime.block_on(storage.delete_conversation(&conv_id))?;
         
         self.load_history_list();
         if self.history_selected_index >= self.history_conversations.len()
@@ -183,17 +181,8 @@ impl App {
             self.cancel_history_delete_all();
             return Ok(());
         }
-        let storage = self
-            .storage
-            .as_ref()
-            .ok_or_else(|| color_eyre::eyre::eyre!("Storage not initialized"))?;
-        
-        let runtime = self
-            .storage_runtime()
-            .ok_or_else(|| color_eyre::eyre::eyre!("Storage runtime not initialized"))?;
-        runtime.block_on(async {
-            storage.delete_all_conversations().await
-        })?;
+        let (storage, runtime) = self.storage_with_runtime()?;
+        runtime.block_on(storage.delete_all_conversations())?;
         
         self.history_conversations.clear();
         self.history_selected_index = 0;
@@ -254,6 +243,14 @@ impl<'a> Navigable for HistoryNavigable<'a> {
 impl App {
     pub fn next_history_item(&mut self) {
         HistoryNavigable::new(self).next_item();
+
+        // Auto-load more when approaching the end
+        if self.history_has_more {
+            let near_end = self.history_selected_index >= self.history_conversations.len().saturating_sub(5);
+            if near_end {
+                self.load_more_history();
+            }
+        }
     }
 
     pub fn previous_history_item(&mut self) {

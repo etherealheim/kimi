@@ -366,7 +366,10 @@ fn render_chat_history(frame: &mut Frame, app: &App, area: Rect) {
     // Add loading indicator if processing
     if app.is_loading {
         add_spacing(&mut lines, 1);
-        let loading_label = if app.is_searching {
+        // Use real-time activity status if available, otherwise fallback to heuristics
+        let loading_label = if let Some(activity) = &app.current_activity {
+            activity.as_str()
+        } else if app.is_searching {
             "searching"
         } else if app.is_fetching_notes {
             "fetching"
@@ -376,10 +379,21 @@ fn render_chat_history(frame: &mut Frame, app: &App, area: Rect) {
         add_loading_indicator(&mut lines, app, loading_label, app.loading_frame, None);
     }
 
-    if app.download_active {
+    // Display each active download
+    for download in &app.active_downloads {
         add_spacing(&mut lines, 1);
-        let progress = app.download_progress.map(|value| format!("{}%", value));
-        add_loading_indicator(&mut lines, app, "downloading", app.download_frame, progress);
+        let progress = download.progress.map(|value| format!("{}%", value));
+
+        // Truncate URL for display if too long (char-safe to avoid UTF-8 panic)
+        let display_url = if download.url.chars().count() > 50 {
+            let truncated: String = download.url.chars().take(47).collect();
+            format!("{}...", truncated)
+        } else {
+            download.url.clone()
+        };
+
+        let label = format!("downloading {}", display_url);
+        add_loading_indicator(&mut lines, app, &label, download.frame, progress);
     }
 
     if app.conversion_active {
@@ -549,8 +563,22 @@ fn add_spacing(lines: &mut Vec<Line>, count: usize) {
 }
 
 fn render_chat_input(frame: &mut Frame, app: &App, area: Rect) {
+    let placeholder_buffer;
     let placeholder_text = if app.is_loading {
-        if app.is_searching {
+        // Use real-time activity status if available, otherwise fallback to heuristics
+        if let Some(activity) = &app.current_activity {
+            // Capitalize first letter for placeholder text
+            if let Some(first_char) = activity.chars().next() {
+                placeholder_buffer = format!(
+                    "{}{}...",
+                    first_char.to_uppercase(),
+                    &activity[first_char.len_utf8()..]
+                );
+                placeholder_buffer.as_str()
+            } else {
+                "Processing..."
+            }
+        } else if app.is_searching {
             "Searching..."
         } else if app.is_fetching_notes {
             "Fetching notes..."

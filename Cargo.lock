@@ -2568,7 +2568,7 @@ dependencies = [
 
 [[package]]
 name = "kimi"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "arboard",
  "base64 0.22.1",

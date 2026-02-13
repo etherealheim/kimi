@@ -9,8 +9,6 @@ use ratatui::{
 use crate::app::App;
 use crate::app::PENDING_SUMMARY_LABEL;
 use crate::ui::components;
-use crate::ui::utils::centered_rect;
-
 pub fn render_history_view(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -35,31 +33,14 @@ fn render_history_header(f: &mut Frame, app: &App, area: Rect) {
     let count = app.history_conversations.len();
     let count_text = if count == 0 {
         String::new()
+    } else if app.history_has_more {
+        format!(" ({} conversations, scroll for more)", count)
     } else {
         format!(" ({} conversations)", count)
     };
 
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Kimi",
-                Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" ", Style::default().fg(Color::DarkGray)),
-            Span::styled("History", Style::default().fg(Color::Cyan)),
-            Span::styled(&count_text, Style::default().fg(Color::DarkGray)),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        )
-        .alignment(Alignment::Left),
-        area,
-    );
+    let extra = vec![Span::styled(count_text, Style::default().fg(Color::DarkGray))];
+    components::render_view_header_with_extra(f, area, "History", extra);
 }
 
 fn render_history_list(f: &mut Frame, app: &App, area: Rect) {
@@ -67,11 +48,47 @@ fn render_history_list(f: &mut Frame, app: &App, area: Rect) {
     let mut selectable_item_count = 0;
     let mut selected_item_index: Option<usize> = None;
 
+    items.extend(build_filter_bar(app));
+
+    if app.history_conversations.is_empty() {
+        items.extend(build_empty_state());
+    } else {
+        for (index, conv) in app.history_conversations.iter().enumerate() {
+            let is_selected = index == app.history_selected_index;
+            items.push(build_conversation_item(app, conv, is_selected, area.width));
+            if is_selected {
+                selected_item_index = Some(items.len().saturating_sub(1));
+            }
+            items.push(ListItem::new(Line::from("")));
+            selectable_item_count += 1;
+        }
+    }
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Conversations ")
+                .border_style(Style::default().fg(Color::DarkGray)),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+
+    let mut list_state = ListState::default();
+    if selectable_item_count > 0
+        && let Some(item_index) = selected_item_index
+    {
+        list_state.select(Some(item_index));
+    }
+
+    f.render_stateful_widget(list, area, &mut list_state);
+}
+
+fn build_filter_bar(app: &App) -> Vec<ListItem<'static>> {
     let filter_content = app.history_filter.content();
     let filter_placeholder = if filter_content.is_empty() {
-        "Filter history..."
+        "Filter history...".to_string()
     } else {
-        filter_content
+        filter_content.to_string()
     };
     let filter_style = if app.history_filter_active {
         Style::default().fg(Color::White)
@@ -92,129 +109,94 @@ fn render_history_list(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::SLOW_BLINK),
         ));
     }
-    items.push(ListItem::new(Line::from(filter_spans)));
-    items.push(ListItem::new(Line::from("")));
-    items.push(ListItem::new(Line::from("")));
+    vec![
+        ListItem::new(Line::from(filter_spans)),
+        ListItem::new(Line::from("")),
+        ListItem::new(Line::from("")),
+    ]
+}
 
-    if app.history_conversations.is_empty() {
-        // Better empty state with helpful message
-        items.push(ListItem::new(Line::from("")));
-        items.push(ListItem::new(Line::from(vec![
+fn build_empty_state() -> Vec<ListItem<'static>> {
+    vec![
+        ListItem::new(Line::from("")),
+        ListItem::new(Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled("No conversations yet", Style::default().fg(Color::DarkGray)),
-        ])));
-        items.push(ListItem::new(Line::from("")));
-        items.push(ListItem::new(Line::from(vec![
+        ])),
+        ListItem::new(Line::from("")),
+        ListItem::new(Line::from(vec![
             Span::styled("  Press ", Style::default().fg(Color::DarkGray)),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::styled(" to start a new chat", Style::default().fg(Color::DarkGray)),
-        ])));
+        ])),
+    ]
+}
+
+fn build_conversation_item<'a>(
+    app: &App,
+    conv: &crate::storage::ConversationSummary,
+    is_selected: bool,
+    area_width: u16,
+) -> ListItem<'a> {
+    let date_display = if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&conv.created_at) {
+        dt.format("%b %d, %H:%M").to_string()
     } else {
-        for (i, conv) in app.history_conversations.iter().enumerate() {
-            let is_selected = i == app.history_selected_index;
+        conv.created_at.clone()
+    };
 
-            // Parse ISO date to more readable format
-            let date_display =
-                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&conv.created_at) {
-                    dt.format("%b %d, %H:%M").to_string()
-                } else {
-                    conv.created_at.clone()
-                };
+    let is_generating = is_pending_summary(app, conv);
+    let summary_text = if is_generating {
+        "Generating summary...".to_string()
+    } else {
+        conv.summary
+            .clone()
+            .unwrap_or_else(|| "Untitled conversation".to_string())
+    };
 
-            let is_generating = is_pending_summary(app, conv);
-            let summary_text = if is_generating {
-                "Generating summary...".to_string()
-            } else {
-                conv.summary
-                    .clone()
-                    .unwrap_or_else(|| "Untitled conversation".to_string())
-            };
+    let prefix = components::selection_prefix(is_selected);
+    let prefix_style = if is_selected {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let summary_style = components::selected_name_style(is_selected);
+    let meta_style = Style::default().fg(Color::DarkGray);
 
-            // Selection styles
-            let (prefix, prefix_style) = if is_selected {
-                (
-                    " > ",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                ("   ", Style::default())
-            };
+    let max_summary_width = area_width.saturating_sub(6) as usize;
+    let summary_lines = wrap_summary_text(&summary_text, max_summary_width, 5);
 
-            let summary_style = if is_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
+    let first_summary_line = summary_lines.first().cloned().unwrap_or_default();
+    let summary_line = Line::from(vec![
+        Span::styled(prefix, prefix_style),
+        Span::styled(first_summary_line, summary_style),
+    ]);
 
-            let meta_style = Style::default().fg(Color::DarkGray);
-
-            let max_summary_width = area.width.saturating_sub(6) as usize;
-            let summary_lines = wrap_summary_text(&summary_text, max_summary_width, 3);
-
-            let first_summary_line = summary_lines.first().cloned().unwrap_or_default();
-            let summary_line = Line::from(vec![
-                Span::styled(prefix, prefix_style),
-                Span::styled(first_summary_line, summary_style),
-            ]);
-
-            // Second line: metadata (date, agent, message count)
-            let mut meta_spans = vec![
-                Span::styled("   ", meta_style),
-                Span::styled(date_display, meta_style),
-                Span::styled(" · ", meta_style),
-                Span::styled(conv.agent_name.clone(), Style::default().fg(Color::Green)),
-                Span::styled(format!(" · {} messages", conv.message_count), meta_style),
-            ];
-            if is_generating {
-                meta_spans.push(Span::styled(" · ", meta_style));
-                meta_spans.push(Span::styled(
-                    PENDING_SUMMARY_LABEL,
-                    Style::default().fg(Color::Yellow),
-                ));
-            }
-            let meta_line = Line::from(meta_spans);
-
-            let mut item_lines = vec![summary_line];
-            for line in summary_lines.iter().skip(1) {
-                item_lines.push(Line::from(vec![
-                    Span::styled("     ", prefix_style),
-                    Span::styled(line.clone(), summary_style),
-                ]));
-            }
-            item_lines.push(meta_line);
-
-            items.push(ListItem::new(item_lines));
-            if is_selected {
-                selected_item_index = Some(items.len().saturating_sub(1));
-            }
-            items.push(ListItem::new(Line::from("")));
-            selectable_item_count += 1;
-        }
+    let mut meta_spans = vec![
+        Span::styled("   ", meta_style),
+        Span::styled(date_display, meta_style),
+        Span::styled(" · ", meta_style),
+        Span::styled(conv.agent_name.clone(), Style::default().fg(Color::Green)),
+    ];
+    if is_generating {
+        meta_spans.push(Span::styled(" · ", meta_style));
+        meta_spans.push(Span::styled(
+            PENDING_SUMMARY_LABEL,
+            Style::default().fg(Color::Yellow),
+        ));
     }
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Conversations ")
-                .border_style(Style::default().fg(Color::DarkGray)),
-        )
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
-
-    // Calculate the position to render based on selected index
-    let mut list_state = ListState::default();
-    if selectable_item_count > 0
-        && let Some(item_index) = selected_item_index
-    {
-        list_state.select(Some(item_index));
+    let mut item_lines = vec![summary_line];
+    for line in summary_lines.iter().skip(1) {
+        item_lines.push(Line::from(vec![
+            Span::styled("     ", prefix_style),
+            Span::styled(line.clone(), summary_style),
+        ]));
     }
+    item_lines.push(Line::from(meta_spans));
 
-    f.render_stateful_widget(list, area, &mut list_state);
+    ListItem::new(item_lines)
 }
 
 fn is_pending_summary(app: &App, conv: &crate::storage::ConversationSummary) -> bool {
@@ -296,26 +278,7 @@ fn render_history_footer(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_history_delete_all_modal(f: &mut Frame, app: &App) {
-    let area = centered_rect(45, 30, f.area());
-    f.render_widget(ratatui::widgets::Clear, area);
-
-    f.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Line::from(vec![
-                Span::styled(" ", Style::default()),
-                Span::styled(
-                    "Delete all history?",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" ", Style::default()),
-            ]))
-            .border_style(Style::default().fg(Color::Cyan))
-            .style(Style::default().bg(Color::Black)),
-        area,
-    );
+    let area = components::render_modal_frame(f, f.area(), 45, 30, "Delete all history?");
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

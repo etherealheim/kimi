@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
@@ -26,26 +26,7 @@ pub fn render_help_view(f: &mut Frame) {
 }
 
 fn render_help_header(f: &mut Frame, area: Rect) {
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Kimi",
-                Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Help", Style::default().fg(Color::Cyan)),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        )
-        .alignment(Alignment::Left),
-        area,
-    );
+    components::render_view_header(f, area, "Help");
 }
 
 fn render_help_body(f: &mut Frame, area: Rect) {

@@ -528,26 +528,29 @@ fn format_identity_prompt(state: &IdentityState) -> String {
         lines.push(format!("YOUR BACKSTORY (this defines who you are):\n{}", state.core.backstory.trim()));
     }
     
-    // Core beliefs with strength-based framing
+    // Core beliefs with strength-based emphasis
     for belief in &state.core.beliefs {
         if belief.text.trim().is_empty() {
             continue;
         }
-        
+
         let framed_belief = if belief.strength >= 0.8 {
-            // High strength: direct assertion
+            // High strength: direct assertion with emphasis
+            format!("CORE BELIEF: {}", belief.text.trim())
+        } else if belief.strength >= 0.6 {
+            // Medium-high strength: strong assertion
             belief.text.trim().to_string()
-        } else if belief.strength >= 0.5 {
-            // Medium strength: background influence
-            format!("Background belief (subtle influence): {}", belief.text.trim())
+        } else if belief.strength >= 0.4 {
+            // Medium strength: present as consideration
+            format!("Consider: {}", belief.text.trim())
         } else if belief.strength >= 0.3 {
-            // Low strength: distant context
-            format!("Distant belief (minimal influence): {}", belief.text.trim())
+            // Low strength: background awareness
+            format!("Background awareness: {}", belief.text.trim())
         } else {
-            // Very low strength: barely mention
-            format!("Faint belief (reference only): {}", belief.text.trim())
+            // Very low strength: skip (below meaningful threshold)
+            continue;
         };
-        
+
         lines.push(framed_belief);
     }
     

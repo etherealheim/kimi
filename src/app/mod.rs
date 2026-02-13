@@ -41,6 +41,8 @@ pub enum AppMode {
     PersonalitySelection,
     PersonalityCreate,
     IdentityView,
+    ProjectList,
+    ProjectDetail,
 }
 
 /// Events from the agent processing thread
@@ -50,14 +52,31 @@ pub enum AgentEvent {
         context_usage: Option<ContextUsage>,
     },
     Error(String),
-    SummaryGenerated(String),
+    SummaryGenerated {
+        summary: String,
+        conversation_id: String,
+        messages: Vec<crate::storage::ConversationMessage>,
+    },
     SystemMessage(String),
-    DownloadFinished,
-    DownloadProgress(u8),
+    StatusUpdate(String),
+    DownloadFinished {
+        url: String,
+    },
+    DownloadProgress {
+        url: String,
+        progress: u8,
+    },
     ConversionFinished,
     CacheObsidianNotes {
         query: String,
         notes: Vec<crate::services::obsidian::NoteSnippet>,
+    },
+    TopicsExtracted {
+        topics: Vec<String>,
+        conversation_id: String,
+    },
+    ProjectEntriesExtracted {
+        results: Vec<crate::services::projects::ProjectExtractionResult>,
     },
 }
 
@@ -82,6 +101,7 @@ pub struct App {
     pub is_loading: bool,
     pub is_searching: bool,
     pub is_fetching_notes: bool,
+    pub current_activity: Option<String>, // Real-time status from background thread
     pub last_response: Option<String>,
     pub agent_manager: Option<AgentManager>,
     pub tts_service: Option<TTSService>,
@@ -104,6 +124,7 @@ pub struct App {
     pub connect_gab_key: String,
     pub connect_brave_key: String,
     pub connect_obsidian_vault: String,
+    pub connect_obsidian_vault_path: String,
     pub connect_providers: Vec<String>,
     pub connect_selected_provider: usize,
     pub connect_api_key_input: TextInput,
@@ -121,11 +142,12 @@ pub struct App {
     pub history_filter_active: bool,
     pub history_delete_all_active: bool,
     pub history_delete_all_confirm_delete: bool,
+    pub history_has_more: bool,
+    pub history_page_size: usize,
     pub storage: Option<StorageManager>,
     pub storage_runtime: Option<tokio::runtime::Runtime>,
     pub is_generating_summary: bool,
     pub current_conversation_id: Option<String>,
-    pub loaded_conversation_message_count: Option<usize>,
     pub status_toast: Option<StatusToast>,
     pub clipboard_service: ClipboardService,
     pub personality_enabled: bool,
@@ -133,21 +155,37 @@ pub struct App {
     pub personality_text: Option<String>,
     pub loading_frame: u8,
     pub last_loading_tick: Option<std::time::Instant>,
-    pub download_active: bool,
-    pub download_frame: u8,
-    pub last_download_tick: Option<std::time::Instant>,
-    pub download_progress: Option<u8>,
+    pub active_downloads: Vec<DownloadItem>,
     pub conversion_active: bool,
     pub conversion_frame: u8,
     pub last_conversion_tick: Option<std::time::Instant>,
     pub summary_active: bool,
     pub summary_frame: u8,
     pub last_summary_tick: Option<std::time::Instant>,
+    pub comfyui_process: Option<std::process::Child>,
+
+    // Project fields
+    pub projects: Vec<crate::services::projects::ProjectSummary>,
+    pub project_entries: Vec<String>,
+    pub project_selected_index: usize,
+    pub project_entry_selected_index: usize,
+    pub current_project_name: Option<String>,
+    pub current_project_description: Option<String>,
+    pub pending_project_suggestions: Vec<String>,
 }
 
 impl Default for App {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        // Kill ComfyUI process when app exits
+        if let Some(mut process) = self.comfyui_process.take() {
+            let _ = process.kill();
+        }
     }
 }
 
@@ -171,6 +209,7 @@ fn base_menu_items() -> Vec<MenuItem> {
         menu_item("models", "Select models per agent"),
         menu_item("connect", "API token configuration"),
         menu_item("personality", "Manage personalities"),
+        menu_item("projects", "View tracked knowledge projects"),
         menu_item("help", "Show keyboard shortcuts"),
         menu_item("quit", "Exit the application"),
     ]
@@ -215,6 +254,7 @@ impl App {
             is_loading: false,
             is_searching: false,
             is_fetching_notes: false,
+            current_activity: None,
             last_response: None,
             agent_manager: None,
             tts_service: None,
@@ -232,6 +272,7 @@ impl App {
             connect_gab_key: String::new(),
             connect_brave_key: String::new(),
             connect_obsidian_vault: String::new(),
+            connect_obsidian_vault_path: String::new(),
             connect_providers: vec![
                 "ElevenLabs".to_string(),
                 "Venice AI".to_string(),
@@ -252,11 +293,12 @@ impl App {
             history_filter_active: false,
             history_delete_all_active: false,
             history_delete_all_confirm_delete: false,
+            history_has_more: false,
+            history_page_size: 20,
             storage: None,
             storage_runtime: None,
             is_generating_summary: false,
             current_conversation_id: None,
-            loaded_conversation_message_count: None,
             status_toast: None,
             clipboard_service: ClipboardService::new(),
             personality_enabled: false,
@@ -264,10 +306,7 @@ impl App {
             personality_text: None,
             loading_frame: 0,
             last_loading_tick: None,
-            download_active: false,
-            download_frame: 0,
-            last_download_tick: None,
-            download_progress: None,
+            active_downloads: Vec::new(),
             conversion_active: false,
             conversion_frame: 0,
             last_conversion_tick: None,
@@ -275,6 +314,14 @@ impl App {
             summary_frame: 0,
             last_summary_tick: None,
             cached_obsidian_notes: None,
+            comfyui_process: None,
+            projects: Vec::new(),
+            project_entries: Vec::new(),
+            project_selected_index: 0,
+            project_entry_selected_index: 0,
+            current_project_name: None,
+            current_project_description: None,
+            pending_project_suggestions: Vec::new(),
         }
     }
 
@@ -293,7 +340,8 @@ impl App {
         self.connect_venice_key = config.venice.api_key.clone();
         self.connect_gab_key = config.gab.api_key.clone();
         self.connect_brave_key = config.brave.api_key.clone();
-        self.connect_obsidian_vault = config.obsidian.vault_path.clone();
+        self.connect_obsidian_vault = config.obsidian.vault_name.clone();
+        self.connect_obsidian_vault_path = config.obsidian.vault_path.clone();
         if let Some(manager) = &mut self.agent_manager {
             if !self.connect_venice_key.is_empty() {
                 manager.set_venice_api_key(self.connect_venice_key.clone());
@@ -362,6 +410,11 @@ impl App {
             return Ok(());
         }
 
+        if command == "projects" {
+            self.open_projects()?;
+            return Ok(());
+        }
+
         if let Some(handler) = self.command_handlers.get(command) {
             let result = handler()?;
             if command == "quit" {
@@ -413,8 +466,104 @@ impl App {
         self.storage.is_some()
     }
 
+    /// Returns a reference to storage and its runtime, or an error if either is missing.
+    /// Reduces the common `storage.as_ref().ok_or(...)` + `storage_runtime().ok_or(...)` boilerplate.
+    pub(crate) fn storage_with_runtime(
+        &self,
+    ) -> color_eyre::Result<(&StorageManager, &tokio::runtime::Runtime)> {
+        let storage = self
+            .storage
+            .as_ref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("Storage not initialized"))?;
+        let runtime = self
+            .storage_runtime()
+            .ok_or_else(|| color_eyre::eyre::eyre!("Storage runtime not initialized"))?;
+        Ok((storage, runtime))
+    }
+
     fn rebuild_menu_items(&mut self) {
         self.menu_items = base_menu_items();
+    }
+
+    // ── Project navigation ──────────────────────────────────────────────────
+
+    pub fn open_projects(&mut self) -> Result<()> {
+        self.mode = AppMode::ProjectList;
+        self.project_selected_index = 0;
+        self.load_project_list();
+        Ok(())
+    }
+
+    pub fn load_project_list(&mut self) {
+        match crate::services::projects::list_projects(&self.connect_obsidian_vault_path) {
+            Ok(projects) => self.projects = projects,
+            Err(_) => self.projects = Vec::new(),
+        }
+    }
+
+    pub fn open_project_detail(&mut self) {
+        if let Some(project) = self.projects.get(self.project_selected_index) {
+            let name = project.name.clone();
+            match crate::services::projects::read_project_file(
+                &self.connect_obsidian_vault_path,
+                &name,
+            ) {
+                Ok(file) => {
+                    self.current_project_name = Some(file.name);
+                    self.current_project_description = Some(file.description);
+                    self.project_entries = file.entries;
+                    self.project_entry_selected_index = 0;
+                    self.mode = AppMode::ProjectDetail;
+                }
+                Err(error) => {
+                    self.show_status_toast(format!("Error: {}", error));
+                }
+            }
+        }
+    }
+
+    pub fn close_project_detail(&mut self) {
+        self.mode = AppMode::ProjectList;
+        self.current_project_name = None;
+        self.current_project_description = None;
+        self.project_entries.clear();
+    }
+
+    pub fn close_projects(&mut self) {
+        self.mode = AppMode::Chat;
+        self.projects.clear();
+    }
+
+    pub fn next_project(&mut self) {
+        if !self.projects.is_empty() {
+            self.project_selected_index =
+                (self.project_selected_index + 1) % self.projects.len();
+        }
+    }
+
+    pub fn previous_project(&mut self) {
+        if !self.projects.is_empty() {
+            self.project_selected_index = self
+                .project_selected_index
+                .checked_sub(1)
+                .unwrap_or(self.projects.len().saturating_sub(1));
+        }
+    }
+
+    pub fn next_project_entry(&mut self) {
+        if !self.project_entries.is_empty() {
+            self.project_entry_selected_index =
+                (self.project_entry_selected_index + 1) % self.project_entries.len();
+        }
+    }
+
+    pub fn previous_project_entry(&mut self) {
+        if !self.project_entries.is_empty() {
+            self.project_entry_selected_index = self
+                .project_entry_selected_index
+                .checked_sub(1)
+                .unwrap_or(self.project_entries.len().saturating_sub(1));
+        }
     }
 
     pub fn show_status_toast(&mut self, message: impl Into<String>) {

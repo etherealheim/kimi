@@ -1,12 +1,6 @@
-use chrono::NaiveDate;
 use color_eyre::Result;
-use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
-
-const MAX_SNIPPET_LINES: usize = 20;
-const MAX_DETAIL_LINES: usize = 120;
-const MAX_WEEK_NOTE_LINES: usize = 12;
+use serde::Deserialize;
+use std::process::Command;
 
 #[derive(Debug, Clone, Copy)]
 pub enum NoteType {
@@ -22,200 +16,107 @@ pub struct NoteSnippet {
     pub snippet: String,
 }
 
-pub fn search_notes(vault_path: &str, query: &str, limit: usize) -> Result<Vec<NoteSnippet>> {
-    let vault = Path::new(vault_path);
-    if !vault.is_dir() {
-        return Ok(Vec::new());
-    }
-    let tokens = tokenize_query(query);
-    let normalized_query = normalize_for_match(query);
-    let wants_direct_title = query_mentions_notes(query);
-    if tokens.is_empty() {
-        return Ok(Vec::new());
-    }
+/// JSON shape returned by `obsidian search ... matches format=json`
+#[derive(Debug, Deserialize)]
+struct SearchResult {
+    file: String,
+    matches: Vec<SearchMatch>,
+}
 
-    let mut scored = Vec::new();
-    let files = collect_markdown_files(vault)?;
-    let wants_details = query_wants_details(query);
-    for path in files {
-        let Some(file_name) = path.file_stem().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let Ok(content) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let normalized_title = normalize_for_match(file_name);
-        if wants_direct_title
-            && !normalized_query.is_empty()
-            && normalized_title.contains(&normalized_query)
-        {
-            let snippet = extract_snippet(&content, &tokens, MAX_DETAIL_LINES);
-            scored.push((
-                1000,
-                NoteSnippet {
-                    title: file_name.to_string(),
-                    note_type: classify_note_type(file_name),
-                    snippet,
-                },
-            ));
-            continue;
-        }
+#[derive(Debug, Deserialize)]
+struct SearchMatch {
+    #[allow(dead_code)]
+    line: u64,
+    text: String,
+}
 
-        let mut score = score_content(&content, file_name, &tokens);
-        if score == 0
-            && !normalized_query.is_empty()
-            && normalized_title.contains(&normalized_query)
-        {
-            score = 500;
-        }
-        if score == 0 {
-            continue;
-        }
-        let max_lines = if wants_details || title_matches_tokens(file_name, &tokens) {
-            MAX_DETAIL_LINES
-        } else {
-            MAX_SNIPPET_LINES
-        };
-        let snippet = extract_snippet(&content, &tokens, max_lines);
-        scored.push((
-            score,
-            NoteSnippet {
-                title: file_name.to_string(),
-                note_type: classify_note_type(file_name),
-                snippet,
-            },
+/// Execute an Obsidian CLI command and return stdout
+fn run_cli(vault_name: &str, args: &[&str]) -> Result<String> {
+    let mut command = Command::new("obsidian");
+    if !vault_name.is_empty() {
+        command.arg(format!("vault={}", vault_name));
+    }
+    for arg in args {
+        command.arg(arg);
+    }
+    let output = command.output().map_err(|error| {
+        color_eyre::eyre::eyre!("Failed to run obsidian CLI: {}", error)
+    })?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    // CLI returns exit 0 even for errors, check for "Error:" prefix in stdout
+    if stdout.starts_with("Error:") {
+        return Err(color_eyre::eyre::eyre!(
+            "Obsidian CLI error: {}",
+            stdout.trim()
         ));
     }
+    if !stderr.is_empty() && !output.status.success() {
+        return Err(color_eyre::eyre::eyre!(
+            "Obsidian CLI failed: {}",
+            stderr.trim()
+        ));
+    }
+    Ok(stdout)
+}
 
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
-    Ok(scored
+/// Search notes using Obsidian's built-in search engine
+pub fn search_notes(vault_name: &str, query: &str, limit: usize) -> Result<Vec<NoteSnippet>> {
+    let limit_str = limit.to_string();
+    let query_arg = format!("query={}", query);
+    let limit_arg = format!("limit={}", limit_str);
+    let output = run_cli(
+        vault_name,
+        &["search", &query_arg, &limit_arg, "matches", "format=json"],
+    )?;
+
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let results: Vec<SearchResult> = serde_json::from_str(trimmed).map_err(|error| {
+        color_eyre::eyre::eyre!("Failed to parse search results: {}", error)
+    })?;
+
+    let snippets = results
         .into_iter()
-        .take(limit)
-        .map(|(_, snippet)| snippet)
-        .collect())
-}
-
-/// Fetches weekly note + daily notes for a given ISO week
-pub fn week_notes_context(
-    vault_path: &str,
-    week: crate::services::dates::IsoWeek,
-) -> Result<Vec<NoteSnippet>> {
-    let vault = Path::new(vault_path);
-    if !vault.is_dir() {
-        return Ok(Vec::new());
-    }
-    let Some(range) = week.date_range() else {
-        return Ok(Vec::new());
-    };
-    let files = collect_markdown_files(vault)?;
-    let mut snippets = Vec::new();
-
-    for path in files {
-        let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let note_type = classify_note_type(stem);
-        match note_type {
-            NoteType::Daily => {
-                if let Some(date) = parse_daily_date(stem) {
-                    if !crate::services::dates::date_in_range(date, range) {
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
+        .map(|result| {
+            let title = derive_title(&result.file);
+            let note_type = classify_note_type(&title);
+            let snippet = result
+                .matches
+                .iter()
+                .map(|matched| matched.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            NoteSnippet {
+                title,
+                note_type,
+                snippet,
             }
-            NoteType::Weekly => {
-                if let Some((year, parsed_week)) = parse_weekly_date(stem) {
-                    if year != week.year || parsed_week != week.week {
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
-            }
-            NoteType::General => continue,
-        }
-
-        let Ok(content) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let max_lines = match note_type {
-            NoteType::Weekly => MAX_DETAIL_LINES,
-            NoteType::Daily => MAX_WEEK_NOTE_LINES,
-            NoteType::General => MAX_WEEK_NOTE_LINES,
-        };
-        let snippet = extract_first_lines(&content, max_lines);
-        snippets.push(NoteSnippet {
-            title: stem.to_string(),
-            note_type,
-            snippet,
-        });
-    }
+        })
+        .collect();
 
     Ok(snippets)
 }
 
-/// Fetches daily notes for a date range (inclusive)
-pub fn daily_notes_context(
-    vault_path: &str,
-    range: crate::services::dates::DateRange,
-) -> Result<Vec<NoteSnippet>> {
-    let vault = Path::new(vault_path);
-    if !vault.is_dir() {
-        return Ok(Vec::new());
-    }
-    let files = collect_markdown_files(vault)?;
-    let mut snippets = Vec::new();
-    for path in files {
-        let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let Some(date) = parse_daily_date(stem) else {
-            continue;
-        };
-        if !crate::services::dates::date_in_range(date, range) {
-            continue;
-        }
-        let Ok(content) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let snippet = extract_first_lines(&content, MAX_WEEK_NOTE_LINES);
-        snippets.push(NoteSnippet {
-            title: stem.to_string(),
-            note_type: NoteType::Daily,
-            snippet,
-        });
-    }
-    Ok(snippets)
+/// Read a specific note by file name (fuzzy) or path (exact)
+pub fn read_note(vault_name: &str, file_or_path: &str) -> Result<String> {
+    let arg = format!("file={}", file_or_path);
+    let output = run_cli(vault_name, &["read", &arg])?;
+    Ok(output)
 }
 
-pub fn week_note_checklist(
-    vault_path: &str,
-    week: crate::services::dates::IsoWeek,
-) -> Result<Vec<String>> {
-    let vault = Path::new(vault_path);
-    if !vault.is_dir() {
-        return Ok(Vec::new());
-    }
-    let files = collect_markdown_files(vault)?;
-    for path in files {
-        let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if let Some((year, parsed_week)) = parse_weekly_date(stem)
-            && year == week.year
-            && parsed_week == week.week
-        {
-            let Ok(content) = fs::read_to_string(&path) else {
-                return Ok(Vec::new());
-            };
-            return Ok(extract_checklist_items(&content));
-        }
-    }
-    Ok(Vec::new())
+/// Read today's daily note
+#[allow(dead_code)]
+pub fn read_daily_note(vault_name: &str) -> Result<String> {
+    let output = run_cli(vault_name, &["daily:read"])?;
+    Ok(output)
 }
 
+/// Format note snippets into a context block for the LLM
 pub fn format_obsidian_context(label: &str, notes: &[NoteSnippet]) -> Option<String> {
     if notes.is_empty() {
         return None;
@@ -231,212 +132,8 @@ pub fn format_obsidian_context(label: &str, notes: &[NoteSnippet]) -> Option<Str
     Some(blocks.join("\n"))
 }
 
-fn note_type_label(note_type: NoteType) -> &'static str {
-    match note_type {
-        NoteType::Daily => "daily note",
-        NoteType::Weekly => "weekly note",
-        NoteType::General => "note",
-    }
-}
-
-fn collect_markdown_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-            {
-                files.push(path);
-            }
-        }
-    }
-    Ok(files)
-}
-
-fn classify_note_type(stem: &str) -> NoteType {
-    if parse_daily_date(stem).is_some() {
-        return NoteType::Daily;
-    }
-    if parse_weekly_date(stem).is_some() {
-        return NoteType::Weekly;
-    }
-    NoteType::General
-}
-
-fn parse_daily_date(stem: &str) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(stem, "%Y-%m-%d").ok()
-}
-
-fn parse_weekly_date(stem: &str) -> Option<(i32, u32)> {
-    // Support both YYYY-W4 and YYYY-W04 formats (case-insensitive)
-    let lowered = stem.to_lowercase();
-    let parts: Vec<&str> = lowered.split("-w").collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    let year_part = parts.first()?;
-    let week_part = parts.get(1)?;
-    let year = year_part.parse::<i32>().ok()?;
-    let week_str = week_part.trim_start_matches('0');
-    let week = if week_str.is_empty() {
-        0
-    } else {
-        week_str.parse::<u32>().ok()?
-    };
-    // Validate week range (1-53)
-    if !(1..=53).contains(&week) {
-        return None;
-    }
-    Some((year, week))
-}
-
-fn tokenize_query(query: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut seen = HashSet::new();
-    for raw in query.split_whitespace() {
-        let cleaned = raw
-            .trim_matches(|character: char| !character.is_alphanumeric() && character != '-')
-            .to_lowercase();
-        if cleaned.len() < 2 {
-            continue;
-        }
-        if cleaned == "notes" || cleaned == "note" || cleaned == "obsidian" {
-            continue;
-        }
-        if seen.insert(cleaned.clone()) {
-            tokens.push(cleaned);
-        }
-    }
-    tokens
-}
-
-fn title_matches_tokens(title: &str, tokens: &[String]) -> bool {
-    let lowered = normalize_for_match(title);
-    let mut matched = 0usize;
-    for token in tokens {
-        if lowered.contains(&normalize_for_match(token)) {
-            matched += 1;
-        }
-    }
-    matched > 0
-}
-
-fn query_wants_details(query: &str) -> bool {
-    let lowered = query.to_lowercase();
-    let triggers = [
-        "all",
-        "everything",
-        "full",
-        "details",
-        "show me",
-        "bring that",
-        "what i have",
-        "what i have in notes",
-        "what's in",
-        "whats in",
-        "what is in",
-        "tell me what",
-        "show me what",
-        "can you tell",
-        "summarize",
-        "summary",
-        "content",
-        "contains",
-        "list",
-    ];
-    triggers.iter().any(|term| lowered.contains(term))
-}
-
-fn score_content(content: &str, title: &str, tokens: &[String]) -> usize {
-    let lowered = normalize_for_match(content);
-    let title_lowered = normalize_for_match(title);
-    let mut score = 0usize;
-    let mut title_matches = 0usize;
-    for token in tokens {
-        let normalized = normalize_for_match(token);
-        let occurrences = lowered.matches(&normalized).count();
-        if occurrences > 0 {
-            score += occurrences * 2;
-        }
-        if title_lowered.contains(&normalized) {
-            title_matches += 1;
-        }
-    }
-    if title_matches > 0 {
-        score += 15 + title_matches * 10;
-    }
-    score
-}
-
-fn normalize_for_match(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| character.is_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect()
-}
-
-fn query_mentions_notes(query: &str) -> bool {
-    let lowered = query.to_lowercase();
-    let triggers = [
-        "note",
-        "notes",
-        "obsidian",
-        "in my notes",
-        "from my notes",
-        "my notes about",
-        "notes about",
-        "from obsidian",
-    ];
-    triggers.iter().any(|term| lowered.contains(term))
-}
-
-fn extract_snippet(content: &str, tokens: &[String], max_lines: usize) -> String {
-    let lowered = content.to_lowercase();
-    let lines: Vec<&str> = content.lines().collect();
-    let mut best_line = None;
-    for (index, line) in lines.iter().enumerate() {
-        let line_lower = line.to_lowercase();
-        if tokens.iter().any(|token| line_lower.contains(token)) {
-            best_line = Some(index);
-            break;
-        }
-    }
-    if let Some(index) = best_line {
-        let start = index.saturating_sub(1);
-        let end = (index + max_lines).min(lines.len());
-        return lines
-            .get(start..end)
-            .map(|slice| slice.join("\n"))
-            .unwrap_or_default();
-    }
-    if lowered.trim().is_empty() {
-        return String::new();
-    }
-    extract_first_lines(content, max_lines)
-}
-
-fn extract_first_lines(content: &str, max_lines: usize) -> String {
-    content
-        .lines()
-        .take(max_lines)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn extract_checklist_items(content: &str) -> Vec<String> {
+/// Extract checklist items (- [ ] / - [x]) from raw note content
+pub fn extract_checklist_items(content: &str) -> Vec<String> {
     content
         .lines()
         .filter_map(|line| {
@@ -448,4 +145,47 @@ fn extract_checklist_items(content: &str) -> Vec<String> {
             }
         })
         .collect()
+}
+
+fn note_type_label(note_type: NoteType) -> &'static str {
+    match note_type {
+        NoteType::Daily => "daily note",
+        NoteType::Weekly => "weekly note",
+        NoteType::General => "note",
+    }
+}
+
+/// Derive a clean title from a file path like "Journal/Daily/2026-02-10.md"
+fn derive_title(file_path: &str) -> String {
+    std::path::Path::new(file_path)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or(file_path)
+        .to_string()
+}
+
+/// Classify a note title as Daily, Weekly, or General based on naming patterns
+fn classify_note_type(title: &str) -> NoteType {
+    // Daily: YYYY-MM-DD pattern
+    if title.len() == 10
+        && title.chars().nth(4) == Some('-')
+        && title.chars().nth(7) == Some('-')
+        && title.chars().take(4).all(|character| character.is_ascii_digit())
+        && title.chars().skip(5).take(2).all(|character| character.is_ascii_digit())
+        && title.chars().skip(8).take(2).all(|character| character.is_ascii_digit())
+    {
+        return NoteType::Daily;
+    }
+    // Weekly: YYYY-W## pattern (case insensitive)
+    let lowered = title.to_lowercase();
+    if lowered.contains("-w") {
+        let parts: Vec<&str> = lowered.split("-w").collect();
+        if parts.len() == 2
+            && parts.first().is_some_and(|year| year.len() == 4 && year.chars().all(|character| character.is_ascii_digit()))
+            && parts.get(1).is_some_and(|week| !week.is_empty() && week.chars().all(|character| character.is_ascii_digit()))
+        {
+            return NoteType::Weekly;
+        }
+    }
+    NoteType::General
 }

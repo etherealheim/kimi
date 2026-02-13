@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::ui::components;
 
 pub fn render_command_menu(frame: &mut Frame, app: &App) {
     let filtered_items = app.filtered_items();
@@ -36,26 +37,7 @@ pub fn render_command_menu(frame: &mut Frame, app: &App) {
 }
 
 fn render_command_header(frame: &mut Frame, area: Rect) {
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Kimi",
-                Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Commands", Style::default().fg(Color::Cyan)),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        )
-        .alignment(Alignment::Left),
-        area,
-    );
+    components::render_view_header(frame, area, "Commands");
 }
 
 fn render_search_input(frame: &mut Frame, app: &App, area: Rect) {
@@ -115,22 +97,10 @@ fn render_command_list(
         .enumerate()
         .map(|(index, item)| {
             let is_selected = index == app.selected_index;
-            let prefix = " ";
-
-            let name_style = if is_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-
-            let description_style = if is_selected {
-                Style::default().fg(Color::Black).bg(Color::Cyan)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
+            let prefix = if is_selected { "> " } else { "  " };
+            let name_style = components::selected_name_style(is_selected);
+            let description_style =
+                components::selected_secondary_style(is_selected, Style::default().fg(Color::DarkGray));
 
             ListItem::new(Line::from(vec![
                 Span::styled(" ", Style::default()),

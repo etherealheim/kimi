@@ -14,6 +14,14 @@ struct OllamaChatRequest {
     model: String,
     messages: Vec<OllamaMessage>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<OllamaOptions>,
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_gpu: Option<i32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -37,7 +45,7 @@ impl OllamaClient {
         }
     }
 
-    pub fn chat(&self, model: &str, messages: &[ChatMessage]) -> Result<String> {
+    pub fn chat(&self, model: &str, messages: &[ChatMessage], num_gpu: Option<i32>) -> Result<String> {
         let ollama_messages: Vec<OllamaMessage> = messages
             .iter()
             .map(|msg| OllamaMessage {
@@ -45,16 +53,22 @@ impl OllamaClient {
                     MessageRole::System => "system".to_string(),
                     MessageRole::User => "user".to_string(),
                     MessageRole::Assistant => "assistant".to_string(),
+                    MessageRole::Tool => "tool".to_string(),
                 },
                 content: msg.content.clone(),
                 images: msg.images.clone(),
             })
             .collect();
 
+        let options = num_gpu.map(|gpu_layers| OllamaOptions {
+            num_gpu: Some(gpu_layers),
+        });
+
         let request = OllamaChatRequest {
             model: model.to_string(),
             messages: ollama_messages,
             stream: false,
+            options,
         };
 
         let response = self

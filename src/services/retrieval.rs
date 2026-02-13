@@ -20,6 +20,12 @@ fn debug_log(_msg: &str) {
 const EMBEDDING_BACKFILL_LIMIT: usize = 50;
 const RRF_K: f32 = 60.0;
 const RECENT_USER_LIMIT: usize = 50;
+/// Broader limit for meta-recall queries ("what do you remember about me?")
+const META_RECALL_USER_LIMIT: usize = 100;
+/// Maximum conversation summaries to include in meta-recall results
+const META_RECALL_SUMMARY_LIMIT: usize = 20;
+/// Minimum message length to be considered substantive (skip "ok", "yes", etc.)
+const MIN_SUBSTANTIVE_LENGTH: usize = 15;
 /// Number of messages missing embeddings that triggers opportunistic backfill
 const BACKFILL_THRESHOLD: usize = 10;
 
@@ -31,6 +37,13 @@ pub async fn retrieve_relevant_messages(
     similarity_threshold: f32,
 ) -> Result<Vec<RetrievedMessage>> {
     debug_log(&format!("=== retrieve_relevant_messages called for: '{}' ===", query));
+
+    // Meta-recall queries ("what do you remember about me?") bypass semantic search
+    // and return a broad sample of stored user statements + conversation summaries
+    if is_meta_recall_query(query) {
+        debug_log("Meta-recall query detected -- using broad retrieval");
+        return build_meta_recall_results(storage, limit).await;
+    }
     
     // Debug: check embedding stats
     if let Ok((total, with_embedding)) = storage.get_embedding_stats().await {
@@ -183,9 +196,9 @@ pub async fn generate_message_embedding(content: &str) -> Result<Option<Vec<f32>
     
     match crate::services::embeddings::generate_embedding(embedding_text).await {
         Ok(embedding) => Ok(Some(embedding)),
-        Err(error) => {
-            // Log error but don't fail the entire operation
-            eprintln!("Warning: Failed to generate embedding: {}", error);
+        Err(_error) => {
+            // Silently handle embedding errors - they're not critical
+            // The system will fall back to keyword search or cached notes
             Ok(None)
         }
     }
@@ -396,4 +409,123 @@ fn is_profile_fact_candidate(content: &str) -> bool {
         || lowered.contains("my favourite ")
         || lowered.contains("my job ")
         || lowered.contains("i work ")
+}
+
+/// Detects broad meta-recall queries where the user asks "what do you remember/know about me?"
+/// These need a broad retrieval strategy since semantic search can't match meta-questions to content.
+pub fn is_meta_recall_query(query: &str) -> bool {
+    let lowered = query.to_lowercase();
+    let meta_triggers = [
+        "what do you remember",
+        "what do you recall",
+        "what do you know about me",
+        "do you remember me",
+        "do you know me",
+        "do you know who i am",
+        "who am i",
+        "tell me about myself",
+        "what have you learned about me",
+        "what have i told you",
+        "remember about me",
+        "recall about me",
+        "know about me",
+        "everything you know",
+        "all you know about",
+        "sum up what you know",
+        "summarize what you know",
+    ];
+    meta_triggers
+        .iter()
+        .any(|trigger| lowered.contains(trigger))
+}
+
+/// Broad retrieval for meta-recall queries: loads substantive user statements
+/// plus conversation summaries, letting the LLM synthesize.
+pub async fn build_meta_recall_results(
+    storage: &StorageManager,
+    limit: usize,
+) -> Result<Vec<RetrievedMessage>> {
+    let mut results = Vec::new();
+
+    // Load recent conversation summaries (condensed info about past chats)
+    if let Ok(summaries) = storage
+        .load_conversations_with_limit(META_RECALL_SUMMARY_LIMIT)
+        .await
+    {
+        for summary in summaries {
+            // Prefer detailed_summary, fall back to summary
+            let text = summary
+                .detailed_summary
+                .filter(|value| !value.trim().is_empty())
+                .or(summary.summary.filter(|value| !value.trim().is_empty()));
+
+            if let Some(text) = text {
+                results.push(RetrievedMessage {
+                    content: format!("[Conversation summary] {}", text),
+                    role: "System".to_string(),
+                    timestamp: summary.created_at,
+                    similarity: 0.0,
+                    score: 0.02,
+                    source: RetrievalSource::Heuristic,
+                });
+            }
+        }
+    }
+    debug_log(&format!(
+        "Meta-recall: {} conversation summaries loaded",
+        results.len()
+    ));
+
+    // Load recent user messages and keep substantive statements
+    if let Ok(messages) = storage
+        .load_recent_user_messages(META_RECALL_USER_LIMIT)
+        .await
+    {
+        for message in messages {
+            if is_substantive_statement(&message.content) {
+                results.push(RetrievedMessage {
+                    content: message.content,
+                    role: message.role,
+                    timestamp: message.timestamp,
+                    similarity: 0.0,
+                    score: 0.01,
+                    source: RetrievalSource::Heuristic,
+                });
+            }
+        }
+    }
+    debug_log(&format!("Meta-recall: {} total results", results.len()));
+
+    results.truncate(limit);
+    Ok(results)
+}
+
+/// Checks if a user message is substantive enough to include in meta-recall results.
+/// Filters out questions, very short messages, and greetings.
+fn is_substantive_statement(content: &str) -> bool {
+    let trimmed = content.trim();
+
+    // Too short to be meaningful
+    if trimmed.len() < MIN_SUBSTANTIVE_LENGTH {
+        return false;
+    }
+
+    // Skip pure questions (they don't reveal info about the user)
+    if trimmed.ends_with('?') && !trimmed.contains(". ") {
+        return false;
+    }
+
+    let lowered = trimmed.to_lowercase();
+
+    // Skip greetings and filler
+    let filler = [
+        "hello", "hi", "hey", "thanks", "thank you", "ok", "okay",
+        "sure", "yes", "no", "bye", "goodbye", "good morning",
+        "good night", "good evening",
+    ];
+    if filler.iter().any(|word| lowered == *word) {
+        return false;
+    }
+
+    true
 }

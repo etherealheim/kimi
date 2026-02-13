@@ -2,6 +2,8 @@ pub mod brave;
 #[path = "gab-ai.rs"]
 pub mod gab_ai;
 pub mod ollama;
+#[path = "openai-compat.rs"]
+pub mod openai_compat;
 pub mod venice;
 
 use crate::config::Config;
@@ -18,6 +20,7 @@ pub struct Agent {
     pub model: String,
     pub system_prompt: String,
     pub model_source: ModelSource,
+    pub num_gpu: Option<i32>,
 }
 
 /// Manages AI agents and their interaction with the Ollama backend
@@ -45,6 +48,7 @@ impl AgentManager {
                     model: agent_config.model.clone(),
                     system_prompt: agent_config.system_prompt.clone(),
                     model_source: ModelSource::Ollama,
+                    num_gpu: agent_config.num_gpu,
                 },
             );
         }
@@ -114,7 +118,7 @@ impl AgentManager {
     /// Sends a chat request to the agent
     pub fn chat(&self, agent: &Agent, messages: &[ChatMessage]) -> Result<String> {
         match agent.model_source {
-            ModelSource::Ollama => self.ollama_client.chat(&agent.model, messages),
+            ModelSource::Ollama => self.ollama_client.chat(&agent.model, messages, agent.num_gpu),
             ModelSource::VeniceAPI => {
                 let api_key = self
                     .venice_api_key
@@ -128,6 +132,30 @@ impl AgentManager {
                     .as_ref()
                     .ok_or_else(|| color_eyre::eyre::eyre!("Gab AI key not configured"))?;
                 crate::agents::gab_ai::chat(api_key, &self.gab_base_url, &agent.model, messages)
+            }
+        }
+    }
+
+    /// Sends a chat request with native tool calling support
+    /// Venice API supports native tools; Ollama and Gab fall back to text-only response
+    pub fn chat_with_tools(
+        &self,
+        agent: &Agent,
+        messages: &[ChatMessage],
+        tools: &[openai_compat::ToolDefinition],
+    ) -> Result<openai_compat::ChatResponse> {
+        match agent.model_source {
+            ModelSource::VeniceAPI => {
+                let api_key = self
+                    .venice_api_key
+                    .as_ref()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("Venice API key not configured"))?;
+                crate::agents::venice::chat_with_tools(api_key, &agent.model, messages, tools)
+            }
+            // Ollama and Gab don't support native tool calling -- return text-only response
+            ModelSource::Ollama | ModelSource::GabAI => {
+                let content = self.chat(agent, messages)?;
+                Ok(openai_compat::ChatResponse::text(content))
             }
         }
     }
@@ -155,6 +183,10 @@ pub struct ChatMessage {
     pub role: MessageRole,
     pub content: String,
     pub images: Vec<String>,
+    /// Tool calls made by the assistant (for native tool calling)
+    pub tool_calls: Option<Vec<openai_compat::ToolCallResponse>>,
+    /// The ID of the tool call this message responds to (role = Tool)
+    pub tool_call_id: Option<String>,
 }
 
 /// Role of a message in the conversation
@@ -163,6 +195,7 @@ pub enum MessageRole {
     System,
     User,
     Assistant,
+    Tool,
 }
 
 impl ChatMessage {
@@ -171,6 +204,8 @@ impl ChatMessage {
             role: MessageRole::System,
             content: content.into(),
             images: Vec::new(),
+            tool_calls: None,
+            tool_call_id: None,
         }
     }
 
@@ -179,6 +214,8 @@ impl ChatMessage {
             role: MessageRole::User,
             content: content.into(),
             images: Vec::new(),
+            tool_calls: None,
+            tool_call_id: None,
         }
     }
 
@@ -187,6 +224,33 @@ impl ChatMessage {
             role: MessageRole::Assistant,
             content: content.into(),
             images: Vec::new(),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    /// Creates an assistant message that contains tool calls (from native API response)
+    pub fn assistant_with_tool_calls(
+        content: impl Into<String>,
+        tool_calls: Vec<openai_compat::ToolCallResponse>,
+    ) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content: content.into(),
+            images: Vec::new(),
+            tool_calls: Some(tool_calls),
+            tool_call_id: None,
+        }
+    }
+
+    /// Creates a tool result message
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::Tool,
+            content: content.into(),
+            images: Vec::new(),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
         }
     }
 }

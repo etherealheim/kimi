@@ -91,44 +91,39 @@ impl App {
         if !self.ensure_storage() {
             return Err(color_eyre::eyre::eyre!("Storage not initialized"));
         }
-        let Some(storage) = &self.storage else {
-            return Err(color_eyre::eyre::eyre!("Storage not initialized"));
-        };
         let agent_name = self
             .current_agent
             .as_ref()
-            .map_or("unknown", |agent| agent.name.as_str());
-        
-        let runtime = self
-            .storage_runtime()
-            .ok_or_else(|| color_eyre::eyre::eyre!("Storage runtime not initialized"))?;
+            .map_or("unknown", |agent| agent.name.as_str())
+            .to_string();
+
+        let (storage, runtime) = self.storage_with_runtime()?;
         if let Some(conversation_id) = &self.current_conversation_id {
-            let conv_id_clone = conversation_id.clone();
-            runtime.block_on(async {
-                storage.update_conversation(
-                    &conv_id_clone,
-                    PENDING_SUMMARY_LABEL,
-                    PENDING_SUMMARY_LABEL,
-                    messages,
-                ).await
-            })?;
+            runtime.block_on(storage.update_conversation(
+                conversation_id,
+                PENDING_SUMMARY_LABEL,
+                PENDING_SUMMARY_LABEL,
+                messages,
+            ))?;
         } else {
-            let data = crate::storage::ConversationData::new(agent_name, messages)
+            let data = crate::storage::ConversationData::new(&agent_name, messages)
                 .with_summary(PENDING_SUMMARY_LABEL)
                 .with_detailed_summary(PENDING_SUMMARY_LABEL);
-            let conversation_id = runtime.block_on(async {
-                storage.save_conversation(data).await
-            })?;
+            let conversation_id = runtime.block_on(storage.save_conversation(data))?;
             self.current_conversation_id = Some(conversation_id);
         }
         Ok(())
     }
 
-    /// Spawns a background thread to generate conversation summary
+    /// Spawns a background thread to generate conversation summary.
+    /// The thread is fully self-contained: it carries the conversation_id and messages
+    /// so the result can be saved without depending on current app state.
     fn spawn_summary_generation_thread(
         agent: crate::agents::Agent,
         manager: crate::agents::AgentManager,
         context: String,
+        conversation_id: String,
+        conversation_messages: Vec<crate::storage::ConversationMessage>,
         agent_tx: std::sync::mpsc::Sender<AgentEvent>,
     ) {
         let summary_prompt = format!(
@@ -155,7 +150,11 @@ Conversation: {}",
             };
             let (short, detailed) = Self::parse_summary_pair(&response);
             let payload = format!("{}\n{}", short, detailed);
-            let _ = agent_tx.send(AgentEvent::SummaryGenerated(payload));
+            let _ = agent_tx.send(AgentEvent::SummaryGenerated {
+                summary: payload,
+                conversation_id,
+                messages: conversation_messages,
+            });
         });
     }
 
@@ -180,18 +179,8 @@ Conversation: {}",
             return Ok(());
         }
 
-        // Check if conversation was modified since loading
-        let current_non_system_count = self.chat_history.iter()
-            .filter(|msg| msg.role != MessageRole::System)
-            .count();
-        
-        let conversation_modified = self.loaded_conversation_message_count != Some(current_non_system_count);
-
-        // Only generate summary if conversation was actually modified
-        if conversation_modified {
-            self.is_generating_summary = true;
-            self.summary_active = true;
-
+        // Always generate summary for conversations with messages
+        if !self.chat_history.is_empty() {
             let context = self.build_summary_context();
             let messages = self.build_conversation_messages();
             
@@ -200,15 +189,29 @@ Conversation: {}",
                 self.show_status_toast(format!("HISTORY SAVE FAILED: {}", error));
             }
             
-            let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
+            // Validate dependencies BEFORE setting flags.
+            // If this fails, we skip summary generation but still load history normally.
+            if let Ok((agent, manager, agent_tx)) = self.get_agent_chat_dependencies() {
+                self.is_generating_summary = true;
+                self.summary_active = true;
 
-            // Summary generation happens in background thread (non-blocking)
-            Self::spawn_summary_generation_thread(
-                agent,
-                manager,
-                context,
-                agent_tx,
-            );
+                // Capture conversation_id now — the thread must be self-contained
+                // so it works even if the user opens a new chat before it finishes.
+                let conversation_id = self
+                    .current_conversation_id
+                    .clone()
+                    .unwrap_or_default();
+
+                // Summary generation happens in background thread (non-blocking)
+                Self::spawn_summary_generation_thread(
+                    agent,
+                    manager,
+                    context,
+                    conversation_id,
+                    messages.clone(),
+                    agent_tx,
+                );
+            }
         }
 
         // Load history data (this might take a moment if many conversations)

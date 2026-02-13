@@ -14,7 +14,6 @@ pub struct ConversationSummary {
     #[allow(dead_code)]
     pub detailed_summary: Option<String>,
     pub created_at: String,
-    pub message_count: usize,
 }
 
 /// A stored message from conversation history
@@ -125,6 +124,7 @@ struct ConversationRecord {
 }
 
 /// Manages persistent storage of conversations using SurrealDB
+#[derive(Clone)]
 pub struct StorageManager {
     db: Surreal<Db>,
 }
@@ -172,6 +172,14 @@ impl StorageManager {
                 FIELDS embedding MTREE DIMENSION 1024 DIST COSINE;
             DEFINE INDEX IF NOT EXISTS idx_msg_content ON message
                 FIELDS content SEARCH ANALYZER content_analyzer BM25;
+        ").await?;
+
+        // Define topic_mention table for project topic tracking
+        self.db.query("
+            DEFINE TABLE IF NOT EXISTS topic_mention SCHEMAFULL;
+            DEFINE FIELD topic ON topic_mention TYPE string;
+            DEFINE FIELD conversation_id ON topic_mention TYPE string;
+            DEFINE FIELD created_at ON topic_mention TYPE string;
         ").await?;
 
         Ok(())
@@ -455,6 +463,7 @@ impl StorageManager {
         Ok(messages)
     }
 
+    #[allow(dead_code, unused_variables)]
     async fn message_count_for_conversation(&self, conversation_id: &Thing) -> Result<usize> {
         #[derive(Debug, Deserialize)]
         struct MessageCount {
@@ -477,6 +486,10 @@ impl StorageManager {
 
     /// Loads all conversation summaries from the database
     pub async fn load_conversations(&self) -> Result<Vec<ConversationSummary>> {
+        self.load_conversations_with_limit(20).await
+    }
+
+    pub async fn load_conversations_with_limit(&self, limit: usize) -> Result<Vec<ConversationSummary>> {
         #[derive(Debug, Deserialize)]
         struct ConvRow {
             id: surrealdb::sql::Thing,
@@ -486,9 +499,8 @@ impl StorageManager {
             created_at: String,
         }
 
-        // Load recent 100 conversations (optimized with limit)
-        let mut response = self.db.query("
-            SELECT 
+        let query = format!("
+            SELECT
                 id,
                 agent_name,
                 summary,
@@ -496,27 +508,21 @@ impl StorageManager {
                 created_at
             FROM conversation
             ORDER BY created_at DESC
-            LIMIT 100
-        ").await?;
+            LIMIT {}
+        ", limit);
 
+        let mut response = self.db.query(query).await?;
         let results: Vec<ConvRow> = response.take(0)?;
 
-        let mut summaries = Vec::with_capacity(results.len());
-        for row in results {
-            // Get message count separately (fast query per conversation)
-            let message_count = self
-                .message_count_for_conversation(&row.id)
-                .await
-                .unwrap_or_default();
-            summaries.push(ConversationSummary {
+        let summaries = results.into_iter().map(|row| {
+            ConversationSummary {
                 id: row.id.to_string(),
                 agent_name: row.agent_name,
                 summary: row.summary,
                 detailed_summary: row.detailed_summary,
                 created_at: row.created_at,
-                message_count,
-            });
-        }
+            }
+        }).collect();
 
         Ok(summaries)
     }
@@ -634,18 +640,18 @@ impl StorageManager {
 
         let filter_str = filter.to_string();
         let mut response = self.db.query("
-            SELECT 
+            SELECT
                 id,
                 agent_name,
                 summary,
                 detailed_summary,
                 created_at
             FROM conversation
-            WHERE 
+            WHERE
                 string::contains(string::lowercase(summary), string::lowercase($filter))
                 OR string::contains(string::lowercase(agent_name), string::lowercase($filter))
                 OR id IN (
-                    SELECT conversation FROM message 
+                    SELECT conversation FROM message
                     WHERE string::contains(string::lowercase(content), string::lowercase($filter))
                 )
             ORDER BY created_at DESC
@@ -655,21 +661,15 @@ impl StorageManager {
 
         let results: Vec<ConvRow> = response.take(0)?;
 
-        let mut summaries = Vec::with_capacity(results.len());
-        for row in results {
-            let message_count = self
-                .message_count_for_conversation(&row.id)
-                .await
-                .unwrap_or_default();
-            summaries.push(ConversationSummary {
+        let summaries = results.into_iter().map(|row| {
+            ConversationSummary {
                 id: row.id.to_string(),
                 agent_name: row.agent_name,
                 summary: row.summary,
                 detailed_summary: row.detailed_summary,
                 created_at: row.created_at,
-                message_count,
-            });
-        }
+            }
+        }).collect();
         Ok(summaries)
     }
 
@@ -711,6 +711,69 @@ impl StorageManager {
                 .await?;
         }
 
+        Ok(())
+    }
+
+    // ── Topic tracking for project suggestions ──────────────────────────────
+
+    /// Records topic mentions for a conversation (batch insert)
+    pub async fn record_topic_mentions(
+        &self,
+        topics: &[String],
+        conversation_id: &str,
+    ) -> Result<()> {
+        let now = chrono::Local::now().to_rfc3339();
+        for topic in topics {
+            let normalized = topic.to_lowercase().trim().to_string();
+            if normalized.is_empty() {
+                continue;
+            }
+            self.db.query(
+                "CREATE topic_mention SET topic = $topic, conversation_id = $conv_id, created_at = $now"
+            )
+            .bind(("topic", normalized))
+            .bind(("conv_id", conversation_id.to_string()))
+            .bind(("now", now.clone()))
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Loads topics that have >= threshold mentions and don't yet have a project file.
+    /// Returns (topic_name, mention_count) pairs.
+    pub async fn load_frequent_topics(
+        &self,
+        threshold: usize,
+    ) -> Result<Vec<(String, usize)>> {
+        #[derive(Debug, Deserialize)]
+        struct TopicCount {
+            topic: String,
+            count: usize,
+        }
+
+        let mut response = self.db.query("
+            SELECT topic, count() AS count
+            FROM topic_mention
+            GROUP BY topic
+            ORDER BY count DESC
+        ").await?;
+
+        let results: Vec<TopicCount> = response.take(0)?;
+        Ok(results
+            .into_iter()
+            .filter(|entry| entry.count >= threshold)
+            .map(|entry| (entry.topic, entry.count))
+            .collect())
+    }
+
+    /// Clears all topic mentions for a given topic (after project creation or archival)
+    pub async fn clear_topic_mentions(&self, topic: &str) -> Result<()> {
+        let normalized = topic.to_lowercase().trim().to_string();
+        self.db.query(
+            "DELETE FROM topic_mention WHERE topic = $topic"
+        )
+        .bind(("topic", normalized))
+        .await?;
         Ok(())
     }
 }

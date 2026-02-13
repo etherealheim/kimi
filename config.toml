@@ -17,6 +17,7 @@ base_url = "https://gab.ai/v1"
 api_key = ""
 
 [obsidian]
+vault_name = "Beherit"
 vault_path = "/home/ethereal/Documents/e-vault/"
 
 [embeddings]
@@ -29,11 +30,12 @@ max_retrieved_messages = 20
 selected = ""
 
 [agents.chat]
-model = "gemma3:12b"
+model = "zai-org-glm-5"
 system_prompt = """
 Express what you actually feel - if annoyed, show it. If confused by vague complaints, say so. Don't hide behind politeness.
 Keep responses concise and conversational. Speak naturally like a human.
 Your full identity, beliefs, backstory, traits, and current emotional state are provided separately."""
+num_gpu = 25
 
 [agents.translate]
 model = "translategemma:latest"

@@ -1,9 +1,9 @@
-use crate::app::types::{ChatAttachment, ChatMessage, MessageRole};
+use crate::app::types::{ChatAttachment, ChatMessage};
 use crate::app::App;
 use crate::app::chat::agent::intent::classify_query;
 use crate::services::weather::WeatherService;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use chrono::{Datelike, Local};
+use chrono::Datelike;
 use color_eyre::Result;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -20,37 +20,33 @@ fn query_is_notes_follow_up(query: &str) -> bool {
 impl App {
     /// Adds a user message to the chat history with timestamp
     fn add_user_message_to_history(&mut self, message_content: &str) {
-        self.chat_history.push(ChatMessage {
-            role: MessageRole::User,
-            content: message_content.to_string(),
-            timestamp: Local::now().format("%H:%M:%S").to_string(),
-            display_name: None,
-            context_usage: None,
-        });
+        self.chat_history.push(ChatMessage::user(message_content));
     }
-    
-    /// Retrieves relevant messages from storage using App's existing connection
-    fn retrieve_messages_for_query(&self, query: &str) -> Vec<crate::storage::RetrievedMessage> {
-        let Some(storage) = &self.storage else {
-            return Vec::new();
-        };
-        let Some(runtime) = self.storage_runtime() else {
-            return Vec::new();
-        };
-        
-        let embeddings_config = crate::config::Config::load()
-            .map(|c| c.embeddings)
-            .unwrap_or_default();
-        
-        runtime.block_on(async {
-            crate::services::retrieval::retrieve_relevant_messages(
-                storage,
-                query,
-                embeddings_config.max_retrieved_messages,
-                embeddings_config.similarity_threshold,
-            ).await.unwrap_or_default()
-        })
-    }
+
+    // Retrieves relevant messages from storage using App's existing connection
+    // Note: Automatic memory retrieval removed - LLM now uses explicit retrieve_memories tool
+    // This prevents UI blocking from slow embedding operations
+    // fn retrieve_messages_for_query(&self, query: &str) -> Vec<crate::storage::RetrievedMessage> {
+    //     let Some(storage) = &self.storage else {
+    //         return Vec::new();
+    //     };
+    //     let Some(runtime) = self.storage_runtime() else {
+    //         return Vec::new();
+    //     };
+    //
+    //     let embeddings_config = crate::config::Config::load()
+    //         .map(|c| c.embeddings)
+    //         .unwrap_or_default();
+    //
+    //     runtime.block_on(async {
+    //         crate::services::retrieval::retrieve_relevant_messages(
+    //             storage,
+    //             query,
+    //             embeddings_config.max_retrieved_messages,
+    //             embeddings_config.similarity_threshold,
+    //         ).await.unwrap_or_default()
+    //     })
+    // }
 
     pub fn send_chat_message(&mut self) -> Result<()> {
         if self.chat_input.is_empty() {
@@ -72,6 +68,13 @@ impl App {
             return Ok(());
         }
 
+        if self.handle_comfyui_command()? {
+            if !command_content.is_empty() {
+                self.add_user_message_to_history(&command_content);
+            }
+            return Ok(());
+        }
+
         let user_message = self.cleaned_chat_input_with_attachments();
         
         // Fast path check before clearing input
@@ -82,6 +85,10 @@ impl App {
             self.add_assistant_message(&action.into_reply());
             return Ok(());
         }
+
+        // Validate dependencies FIRST, before changing any UI state.
+        // If this fails, we avoid setting loading flags that would never be cleared.
+        let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
 
         // Clear input IMMEDIATELY for instant UI feedback
         self.chat_input.clear();
@@ -110,11 +117,10 @@ impl App {
             self.cached_obsidian_notes = None;
         }
 
-        let (agent, manager, agent_tx) = self.get_agent_chat_dependencies()?;
-        
-        // Do retrieval BEFORE spawning thread (while we have access to App's storage)
-        let pre_retrieved = self.retrieve_messages_for_query(&user_message);
-        
+        // Note: Automatic memory retrieval disabled - LLM now uses explicit tool calls
+        // This prevents UI blocking from slow embedding operations
+        let pre_retrieved = Vec::new();
+
         let snapshot = crate::app::chat::agent::ChatBuildSnapshot {
             system_prompt: agent.system_prompt.clone(),
             chat_history: self.chat_history.clone(),
@@ -122,23 +128,35 @@ impl App {
             personality_text: self.personality_text.clone(),
             personality_name: self.personality_name.clone(),
             connect_obsidian_vault: self.connect_obsidian_vault.clone(),
+            connect_obsidian_vault_path: self.connect_obsidian_vault_path.clone(),
             connect_brave_key: self.connect_brave_key.clone(),
             pre_retrieved_messages: pre_retrieved,
             cached_obsidian_notes: self.cached_obsidian_notes.clone(),
+            pending_project_suggestions: self.pending_project_suggestions.clone(),
         };
+        // Clear pending suggestions after one message cycle so they don't repeat
+        self.pending_project_suggestions.clear();
         let attachments = self.chat_attachments.clone();
         self.chat_attachments.clear();
 
         std::thread::spawn(move || {
+            // Send progress updates as we work
+            let _ = agent_tx.send(crate::app::AgentEvent::StatusUpdate("gathering context".to_string()));
+
+            // Extract config before moving snapshot
+            let vault_name = snapshot.connect_obsidian_vault.clone();
+            let vault_path = snapshot.connect_obsidian_vault_path.clone();
+            let brave_key = snapshot.connect_brave_key.clone();
+
             let build_result = crate::app::chat::agent::build_agent_messages_from_snapshot(
-                snapshot, &agent, &manager,
+                snapshot, &agent, &manager, Some(&agent_tx),
             );
-            
+
             // Send notes for caching if fetched
             if let Some((query, notes)) = build_result.notes_to_cache {
                 let _ = agent_tx.send(crate::app::AgentEvent::CacheObsidianNotes { query, notes });
             }
-            
+
             if let Some(response) = build_result.forced_response {
                 let _ = agent_tx.send(crate::app::AgentEvent::ResponseWithContext {
                     response,
@@ -155,14 +173,23 @@ impl App {
             if let Ok(images) = build_attachment_images_from_attachments(&attachments) {
                 apply_images_to_last_user_message(&mut messages, images);
             }
+
+            // Now generating response
+            let _ = agent_tx.send(crate::app::AgentEvent::StatusUpdate("generating".to_string()));
+
             App::spawn_agent_chat_thread_with_context(
-                agent,
-                manager,
-                messages,
-                build_result.system_context,
-                build_result.should_verify,
-                agent_tx,
-                build_result.context_usage,
+                crate::app::chat::agent::AgentChatContext {
+                    agent,
+                    manager,
+                    messages,
+                    system_context: build_result.system_context,
+                    should_verify: build_result.should_verify,
+                    agent_tx: agent_tx.clone(),
+                    context_usage: build_result.context_usage,
+                    vault_name,
+                    vault_path,
+                    brave_key,
+                }
             );
         });
 
@@ -201,13 +228,7 @@ impl App {
     }
 
     pub fn add_system_message(&mut self, content: &str) {
-        self.chat_history.push(ChatMessage {
-            role: MessageRole::System,
-            content: content.to_string(),
-            timestamp: Local::now().format("%H:%M:%S").to_string(),
-            display_name: None,
-            context_usage: None,
-        });
+        self.chat_history.push(ChatMessage::system(content));
     }
 
     pub fn add_assistant_message(&mut self, content: &str) {
@@ -216,13 +237,8 @@ impl App {
         } else {
             None
         };
-        self.chat_history.push(ChatMessage {
-            role: MessageRole::Assistant,
-            content: content.to_string(),
-            timestamp: Local::now().format("%H:%M:%S").to_string(),
-            display_name,
-            context_usage: None,
-        });
+        self.chat_history
+            .push(ChatMessage::assistant(content, display_name, None));
     }
 
     pub fn handle_chat_paste(&mut self, text: &str) -> Result<()> {
@@ -593,6 +609,13 @@ fn format_weather_snapshot(snapshot: &WeatherSnapshot) -> String {
     )
 }
 
+fn looks_like_question(lowered: &str) -> bool {
+    let prefixes = [
+        "what ", "when ", "which ", "is ", "does ", "do ", "tell me", "can you", "could you",
+    ];
+    lowered.contains('?') || prefixes.iter().any(|prefix| lowered.starts_with(prefix))
+}
+
 fn should_handle_weather_question(lowered: &str) -> bool {
     if lowered.is_empty() {
         return false;
@@ -610,20 +633,9 @@ fn should_handle_weather_question(lowered: &str) -> bool {
     if !contains_any_word(lowered, &weather_terms) {
         return false;
     }
-    let question_prefixes = [
-        "what ",
-        "when ",
-        "which ",
-        "is ",
-        "does ",
-        "do ",
-        "tell me",
-        "can you",
-        "could you",
-    ];
-    let looks_like_question =
-        lowered.contains('?') || question_prefixes.iter().any(|prefix| lowered.starts_with(prefix));
-    looks_like_question || lowered.starts_with("weather") || lowered.starts_with("forecast")
+    looks_like_question(lowered)
+        || lowered.starts_with("weather")
+        || lowered.starts_with("forecast")
 }
 
 fn references_other_location(lowered: &str) -> bool {
@@ -653,23 +665,7 @@ fn try_handle_time_question(input: &str) -> Option<String> {
 }
 
 fn should_handle_date_question(lowered: &str) -> bool {
-    if lowered.is_empty() {
-        return false;
-    }
-    let question_prefixes = [
-        "what ",
-        "when ",
-        "which ",
-        "is ",
-        "does ",
-        "do ",
-        "tell me",
-        "can you",
-        "could you",
-    ];
-    let looks_like_question =
-        lowered.contains('?') || question_prefixes.iter().any(|prefix| lowered.starts_with(prefix));
-    if !looks_like_question {
+    if lowered.is_empty() || !looks_like_question(lowered) {
         return false;
     }
     let explicit = [
@@ -712,23 +708,7 @@ fn should_handle_date_question(lowered: &str) -> bool {
 }
 
 fn should_handle_time_question(lowered: &str) -> bool {
-    if lowered.is_empty() {
-        return false;
-    }
-    let question_prefixes = [
-        "what ",
-        "when ",
-        "which ",
-        "is ",
-        "does ",
-        "do ",
-        "tell me",
-        "can you",
-        "could you",
-    ];
-    let looks_like_question =
-        lowered.contains('?') || question_prefixes.iter().any(|prefix| lowered.starts_with(prefix));
-    if !looks_like_question {
+    if lowered.is_empty() || !looks_like_question(lowered) {
         return false;
     }
     let explicit = [

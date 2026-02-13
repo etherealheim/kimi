@@ -6,6 +6,8 @@ Kimi is an experimental Rust TUI chat assistant. `Vibe-coded`, but with good int
 
 #### Upcoming Features
 
+- [ ] Switching from ElevenLabs to Qwen TTS. When TTS will be active it will reflect emotions.
+
 - [x] v0.6.0 Evolving Personality System - An adaptive personality system that learns and evolves based on user interactions
     - Identity has Core belief that defines the psyche
     - Traits emerge, disappear and are tweaked based on the conversations. After longer period of time they decay towards the center.

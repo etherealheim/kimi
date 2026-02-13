@@ -1,15 +1,13 @@
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState},
 };
 
 use crate::app::App;
 use crate::ui::components;
-use crate::ui::utils::centered_rect;
-
 pub fn render_personality_view(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -28,26 +26,7 @@ pub fn render_personality_view(f: &mut Frame, app: &App) {
 }
 
 pub fn render_personality_create(f: &mut Frame, app: &App) {
-    let area = centered_rect(60, 30, f.area());
-    f.render_widget(Clear, area);
-
-    f.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Line::from(vec![
-                Span::styled(" ", Style::default()),
-                Span::styled(
-                    "New Personality",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" ", Style::default()),
-            ]))
-            .border_style(Style::default().fg(Color::Cyan))
-            .style(Style::default().bg(Color::Black)),
-        area,
-    );
+    let area = components::render_modal_frame(f, f.area(), 60, 30, "New Personality");
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -69,26 +48,7 @@ pub fn render_personality_create(f: &mut Frame, app: &App) {
 }
 
 fn render_personality_header(f: &mut Frame, area: Rect) {
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Kimi",
-                Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Personalities", Style::default().fg(Color::Cyan)),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        )
-        .alignment(Alignment::Left),
-        area,
-    );
+    components::render_view_header(f, area, "Personalities");
 }
 
 fn render_personality_list(f: &mut Frame, app: &App, area: Rect) {
@@ -103,41 +63,25 @@ fn render_personality_list(f: &mut Frame, app: &App, area: Rect) {
     let padding = " ".repeat(left_padding.saturating_sub(2)); // -2 for border
 
     let is_base_selected = app.personality_selected_index == 0;
-    let base_style = if is_base_selected {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
     items.push(ListItem::new(Line::from(vec![
         Span::raw(padding.clone()),
         Span::styled(
-            if is_base_selected { " > " } else { "   " },
+            components::selection_prefix(is_base_selected),
             Style::default().fg(Color::Cyan),
         ),
-        Span::styled(base_personality_name, base_style),
+        Span::styled(base_personality_name, components::selected_name_style(is_base_selected)),
     ])));
     if is_base_selected {
         selected_list_index = Some(items.len().saturating_sub(1));
     }
     let is_my_selected = app.personality_selected_index == 1;
-    let my_style = if is_my_selected {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
     items.push(ListItem::new(Line::from(vec![
         Span::raw(padding.clone()),
         Span::styled(
-            if is_my_selected { " > " } else { "   " },
+            components::selection_prefix(is_my_selected),
             Style::default().fg(Color::Cyan),
         ),
-        Span::styled(my_personality_name, my_style),
+        Span::styled(my_personality_name, components::selected_name_style(is_my_selected)),
     ])));
     if is_my_selected {
         selected_list_index = Some(items.len().saturating_sub(1));
@@ -149,17 +93,10 @@ fn render_personality_list(f: &mut Frame, app: &App, area: Rect) {
         let is_selected = list_index == app.personality_selected_index;
         let is_active = app.personality_name.as_deref() == Some(name.as_str());
 
-        let name_style = if is_selected {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
-        };
+        let name_style = components::selected_name_style(is_selected);
 
         let checkbox_style = if is_selected {
-            Style::default().fg(Color::Black).bg(Color::Cyan)
+            components::selected_secondary_style(true, Style::default())
         } else if is_active {
             Style::default().fg(Color::Green)
         } else {
@@ -170,7 +107,7 @@ fn render_personality_list(f: &mut Frame, app: &App, area: Rect) {
         items.push(ListItem::new(Line::from(vec![
             Span::raw(padding.clone()),
             Span::styled(
-                if is_selected { " > " } else { "   " },
+                components::selection_prefix(is_selected),
                 Style::default().fg(Color::Cyan),
             ),
             Span::styled(checkbox, checkbox_style),

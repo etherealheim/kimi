@@ -11,6 +11,7 @@ pub mod dates;
 pub mod embeddings;
 pub mod retrieval;
 pub mod fuzzy;
+pub mod projects;
 
 pub use tts::TTSService;
 pub use fuzzy::fuzzy_score;

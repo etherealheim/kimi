@@ -139,10 +139,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
     loop {
         // Check for agent responses
         app.check_agent_response();
-        tick_loading_animation(app);
-        tick_download_animation(app);
-        tick_conversion_animation(app);
-        tick_summary_animation(app);
+        tick_all_animations(app);
         app.clear_expired_status_toast();
 
         terminal.draw(|f| ui::render(f, app))?;
@@ -190,6 +187,8 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                             handle_personality_create_mode(app, key.code)?
                         }
                         AppMode::IdentityView => handle_identity_view_mode(app, key.code)?,
+                        AppMode::ProjectList => handle_project_list_mode(app, key.code)?,
+                        AppMode::ProjectDetail => handle_project_detail_mode(app, key.code)?,
                     }
                 }
                 Event::Mouse(mouse) => {
@@ -206,79 +205,30 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
     Ok(())
 }
 
-fn tick_loading_animation(app: &mut App) {
+/// Ticks a single animation: resets when inactive, advances frame every 200ms when active
+fn tick_animation(is_active: bool, frame: &mut u8, last_tick: &mut Option<std::time::Instant>) {
     use std::time::{Duration, Instant};
-    if !app.is_loading {
-        app.loading_frame = 0;
-        app.last_loading_tick = None;
+    if !is_active {
+        *frame = 0;
+        *last_tick = None;
         return;
     }
 
     let now = Instant::now();
-    let should_tick = app
-        .last_loading_tick
-        .is_none_or(|last_tick| now.duration_since(last_tick) >= Duration::from_millis(200));
-
-    if should_tick {
-        app.loading_frame = app.loading_frame.wrapping_add(1);
-        app.last_loading_tick = Some(now);
+    if last_tick.is_none_or(|lt| now.duration_since(lt) >= Duration::from_millis(200)) {
+        *frame = frame.wrapping_add(1);
+        *last_tick = Some(now);
     }
 }
 
-fn tick_download_animation(app: &mut App) {
-    use std::time::{Duration, Instant};
-    if !app.download_active {
-        app.download_frame = 0;
-        app.last_download_tick = None;
-        return;
-    }
+fn tick_all_animations(app: &mut App) {
+    tick_animation(app.is_loading, &mut app.loading_frame, &mut app.last_loading_tick);
+    tick_animation(app.conversion_active, &mut app.conversion_frame, &mut app.last_conversion_tick);
+    tick_animation(app.summary_active, &mut app.summary_frame, &mut app.last_summary_tick);
 
-    let now = Instant::now();
-    let should_tick = app
-        .last_download_tick
-        .is_none_or(|last_tick| now.duration_since(last_tick) >= Duration::from_millis(200));
-
-    if should_tick {
-        app.download_frame = app.download_frame.wrapping_add(1);
-        app.last_download_tick = Some(now);
-    }
-}
-
-fn tick_conversion_animation(app: &mut App) {
-    use std::time::{Duration, Instant};
-    if !app.conversion_active {
-        app.conversion_frame = 0;
-        app.last_conversion_tick = None;
-        return;
-    }
-
-    let now = Instant::now();
-    let should_tick = app
-        .last_conversion_tick
-        .is_none_or(|last_tick| now.duration_since(last_tick) >= Duration::from_millis(200));
-
-    if should_tick {
-        app.conversion_frame = app.conversion_frame.wrapping_add(1);
-        app.last_conversion_tick = Some(now);
-    }
-}
-
-fn tick_summary_animation(app: &mut App) {
-    use std::time::{Duration, Instant};
-    if !app.summary_active {
-        app.summary_frame = 0;
-        app.last_summary_tick = None;
-        return;
-    }
-
-    let now = Instant::now();
-    let should_tick = app
-        .last_summary_tick
-        .is_none_or(|last_tick| now.duration_since(last_tick) >= Duration::from_millis(200));
-
-    if should_tick {
-        app.summary_frame = app.summary_frame.wrapping_add(1);
-        app.last_summary_tick = Some(now);
+    // Downloads have per-item animation state
+    for download in &mut app.active_downloads {
+        tick_animation(true, &mut download.frame, &mut download.last_tick);
     }
 }
 
@@ -592,7 +542,9 @@ fn handle_paste(app: &mut App, paste: &str) -> Result<()> {
         | AppMode::Connect
         | AppMode::Help
         | AppMode::PersonalitySelection
-        | AppMode::IdentityView => {}
+        | AppMode::IdentityView
+        | AppMode::ProjectList
+        | AppMode::ProjectDetail => {}
     }
 
     Ok(())
@@ -816,6 +768,72 @@ fn handle_personality_create_mode(app: &mut App, key_code: KeyCode) -> Result<()
         | KeyCode::Delete
         | KeyCode::Insert
         | KeyCode::F(_)
+        | KeyCode::Null
+        | KeyCode::CapsLock
+        | KeyCode::ScrollLock
+        | KeyCode::NumLock
+        | KeyCode::PrintScreen
+        | KeyCode::Pause
+        | KeyCode::Menu
+        | KeyCode::KeypadBegin
+        | KeyCode::Media(_)
+        | KeyCode::Modifier(_) => {}
+    }
+    Ok(())
+}
+
+fn handle_project_list_mode(app: &mut App, key_code: KeyCode) -> Result<()> {
+    match key_code {
+        KeyCode::Esc => app.close_projects(),
+        KeyCode::Up => app.previous_project(),
+        KeyCode::Down => app.next_project(),
+        KeyCode::Enter => app.open_project_detail(),
+        KeyCode::Backspace
+        | KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Home
+        | KeyCode::End
+        | KeyCode::PageUp
+        | KeyCode::PageDown
+        | KeyCode::Tab
+        | KeyCode::BackTab
+        | KeyCode::Delete
+        | KeyCode::Insert
+        | KeyCode::F(_)
+        | KeyCode::Char(_)
+        | KeyCode::Null
+        | KeyCode::CapsLock
+        | KeyCode::ScrollLock
+        | KeyCode::NumLock
+        | KeyCode::PrintScreen
+        | KeyCode::Pause
+        | KeyCode::Menu
+        | KeyCode::KeypadBegin
+        | KeyCode::Media(_)
+        | KeyCode::Modifier(_) => {}
+    }
+    Ok(())
+}
+
+fn handle_project_detail_mode(app: &mut App, key_code: KeyCode) -> Result<()> {
+    match key_code {
+        KeyCode::Esc => app.close_project_detail(),
+        KeyCode::Up => app.previous_project_entry(),
+        KeyCode::Down => app.next_project_entry(),
+        KeyCode::Backspace
+        | KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Home
+        | KeyCode::End
+        | KeyCode::PageUp
+        | KeyCode::PageDown
+        | KeyCode::Tab
+        | KeyCode::BackTab
+        | KeyCode::Delete
+        | KeyCode::Insert
+        | KeyCode::Enter
+        | KeyCode::F(_)
+        | KeyCode::Char(_)
         | KeyCode::Null
         | KeyCode::CapsLock
         | KeyCode::ScrollLock

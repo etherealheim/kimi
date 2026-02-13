@@ -1,7 +1,6 @@
 use crate::app::chat::agent::intent::QueryIntent;
 use crate::services::{dates, obsidian};
 use color_eyre::Result;
-use std::path::Path;
 
 const MAX_OBSIDIAN_CONTEXT_CHARS: usize = 32000;
 
@@ -12,7 +11,7 @@ pub struct ObsidianContext {
 }
 
 pub struct ObsidianContextRequest<'a> {
-    pub vault_path: &'a str,
+    pub vault_name: &'a str,
     pub query: &'a str,
     pub intent: QueryIntent,
 }
@@ -32,26 +31,13 @@ enum ObsidianAction {
 pub fn build_obsidian_context(
     request: ObsidianContextRequest<'_>,
 ) -> Result<Option<ObsidianContext>> {
-    let vault_path = request.vault_path.trim();
+    let vault_name = request.vault_name.trim();
     let lowered = request.query.to_lowercase();
     let intent = request.intent;
-    if vault_path.is_empty() {
+    if vault_name.is_empty() {
         if intent.is_note_lookup {
             return Ok(Some(ObsidianContext {
-                content: "--- Obsidian notes ---\nObsidian vault path is not configured.".to_string(),
-                count: 0,
-                raw_notes: vec![],
-            }));
-        }
-        return Ok(None);
-    }
-    if !Path::new(vault_path).is_dir() {
-        if intent.is_note_lookup {
-            return Ok(Some(ObsidianContext {
-                content: format!(
-                    "--- Obsidian notes ---\nObsidian vault path is not accessible: {}.",
-                    vault_path
-                ),
+                content: "--- Obsidian notes ---\nObsidian vault is not configured.".to_string(),
                 count: 0,
                 raw_notes: vec![],
             }));
@@ -66,7 +52,8 @@ pub fn build_obsidian_context(
             include_checklist,
             week,
         } => {
-            let notes = obsidian::week_notes_context(vault_path, week)?;
+            let week_query = format!("{}-W{:02}", week.year, week.week);
+            let notes = obsidian::search_notes(vault_name, &week_query, 10)?;
             let count = notes.len();
             let raw_notes = notes.clone();
             let mut blocks = Vec::new();
@@ -76,19 +63,24 @@ pub fn build_obsidian_context(
                 blocks.push(clamp_context_chars(&content, MAX_OBSIDIAN_CONTEXT_CHARS));
             } else {
                 blocks.push("--- Obsidian weekly notes ---".to_string());
-                blocks.push(format!(
-                    "No weekly notes found for {}-W{:02}.",
-                    week.year,
-                    week.week
-                ));
+                blocks.push(format!("No weekly notes found for {}.", week_query));
             }
             if include_checklist {
-                let checklist = obsidian::week_note_checklist(vault_path, week)?;
                 blocks.push("--- Weekly checklist ---".to_string());
-                if checklist.is_empty() {
-                    blocks.push("No checklist items found in the weekly note.".to_string());
-                } else {
-                    blocks.extend(checklist);
+                match obsidian::read_note(vault_name, &week_query) {
+                    Ok(content) => {
+                        let checklist = obsidian::extract_checklist_items(&content);
+                        if checklist.is_empty() {
+                            blocks.push(
+                                "No checklist items found in the weekly note.".to_string(),
+                            );
+                        } else {
+                            blocks.extend(checklist);
+                        }
+                    }
+                    Err(_) => {
+                        blocks.push("No checklist items found in the weekly note.".to_string());
+                    }
                 }
             }
             Ok(Some(ObsidianContext {
@@ -98,13 +90,33 @@ pub fn build_obsidian_context(
             }))
         }
         ObsidianAction::DailyNotesRange { range } => {
-            let notes = obsidian::daily_notes_context(vault_path, range)?;
-            if let Some(content) = obsidian::format_obsidian_context("Obsidian daily notes", &notes)
+            let mut notes = Vec::new();
+            let mut current = range.start;
+            while current <= range.end {
+                let date_str = current.format("%Y-%m-%d").to_string();
+                if let Ok(content) = obsidian::read_note(vault_name, &date_str) {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        notes.push(obsidian::NoteSnippet {
+                            title: date_str,
+                            note_type: obsidian::NoteType::Daily,
+                            snippet: trimmed.to_string(),
+                        });
+                    }
+                }
+                current += chrono::Duration::days(1);
+            }
+            if let Some(content) =
+                obsidian::format_obsidian_context("Obsidian daily notes", &notes)
             {
                 let count = notes.len();
                 let raw_notes = notes.clone();
                 let content = clamp_context_chars(&content, MAX_OBSIDIAN_CONTEXT_CHARS);
-                return Ok(Some(ObsidianContext { content, count, raw_notes }));
+                return Ok(Some(ObsidianContext {
+                    content,
+                    count,
+                    raw_notes,
+                }));
             }
             if intent.is_note_lookup {
                 let content = format!(
@@ -112,24 +124,36 @@ pub fn build_obsidian_context(
                     range.start.format("%Y-%m-%d"),
                     range.end.format("%Y-%m-%d")
                 );
-                return Ok(Some(ObsidianContext { content, count: 0, raw_notes: vec![] }));
+                return Ok(Some(ObsidianContext {
+                    content,
+                    count: 0,
+                    raw_notes: vec![],
+                }));
             }
             Ok(None)
         }
         ObsidianAction::NoteSearch => {
-            let notes = obsidian::search_notes(vault_path, request.query, 8)?;
+            let notes = obsidian::search_notes(vault_name, request.query, 8)?;
             if let Some(content) = obsidian::format_obsidian_context("Obsidian notes", &notes) {
                 let count = notes.len();
                 let raw_notes = notes.clone();
                 let content = clamp_context_chars(&content, MAX_OBSIDIAN_CONTEXT_CHARS);
-                return Ok(Some(ObsidianContext { content, count, raw_notes }));
+                return Ok(Some(ObsidianContext {
+                    content,
+                    count,
+                    raw_notes,
+                }));
             }
             if intent.is_note_lookup {
                 let content = format!(
                     "--- Obsidian notes ---\nNo matching notes found for \"{}\".",
                     request.query.trim()
                 );
-                return Ok(Some(ObsidianContext { content, count: 0, raw_notes: vec![] }));
+                return Ok(Some(ObsidianContext {
+                    content,
+                    count: 0,
+                    raw_notes: vec![],
+                }));
             }
             Ok(None)
         }
@@ -189,7 +213,25 @@ fn should_fallback_to_note_search(lowered: &str) -> bool {
         return false;
     }
     let word_count = trimmed.split_whitespace().count();
-    if word_count > 6 {
+    if !(2..=6).contains(&word_count) {
+        return false;
+    }
+    // Conversational phrases should never trigger note search
+    let is_conversational = [
+        "hi", "hello", "hey", "yo", "sup", "thanks", "thank you", "bye", "goodbye",
+        "good morning", "good night", "good evening", "good afternoon",
+        "nice to meet", "how are you", "what's up", "whats up",
+        "i am", "i'm", "my name", "that's", "thats", "okay", "ok",
+        "yes", "no", "sure", "yeah", "nah", "please", "sorry",
+        "cool", "great", "awesome", "nice", "wow", "lol", "haha",
+        "help me", "can you", "could you", "would you", "tell me",
+        "i think", "i feel", "i want", "i need", "i like", "i love",
+        "do you", "are you", "is it", "is that", "was it",
+        "let's", "lets", "why", "how", "when", "where", "what if",
+    ]
+    .iter()
+    .any(|term| trimmed.starts_with(term) || trimmed == *term);
+    if is_conversational {
         return false;
     }
     let has_time_reference = ["today", "now", "current", "latest", "happening", "news"]
@@ -198,9 +240,10 @@ fn should_fallback_to_note_search(lowered: &str) -> bool {
     if has_time_reference {
         return false;
     }
-    let has_code_indicators = ["function", "class", "variable", "import", "export", "def ", "fn "]
-        .iter()
-        .any(|term| trimmed.contains(term));
+    let has_code_indicators =
+        ["function", "class", "variable", "import", "export", "def ", "fn "]
+            .iter()
+            .any(|term| trimmed.contains(term));
     if has_code_indicators {
         return false;
     }
@@ -217,6 +260,7 @@ fn should_fallback_to_note_search(lowered: &str) -> bool {
     if has_personal_question {
         return false;
     }
+    // Only fallback for very short queries that look like topic lookups (e.g. "rust", "swift")
     if word_count <= 4 {
         return true;
     }
@@ -224,12 +268,12 @@ fn should_fallback_to_note_search(lowered: &str) -> bool {
 }
 
 pub fn should_fetch_obsidian_for_intent(
-    vault_path: &str,
+    vault_name: &str,
     query: &str,
     intent: QueryIntent,
 ) -> bool {
-    let vault_path = vault_path.trim();
-    if vault_path.is_empty() {
+    let vault_name = vault_name.trim();
+    if vault_name.is_empty() {
         return false;
     }
     let lowered = query.to_lowercase();

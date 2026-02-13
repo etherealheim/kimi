@@ -35,7 +35,48 @@ pub struct ChatMessage {
     pub content: String,
     pub timestamp: String,
     pub display_name: Option<String>,
+    #[allow(dead_code)]
     pub context_usage: Option<ContextUsage>,
+}
+
+impl ChatMessage {
+    fn now_timestamp() -> String {
+        chrono::Local::now().format("%H:%M:%S").to_string()
+    }
+
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::User,
+            content: content.into(),
+            timestamp: Self::now_timestamp(),
+            display_name: None,
+            context_usage: None,
+        }
+    }
+
+    pub fn system(content: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::System,
+            content: content.into(),
+            timestamp: Self::now_timestamp(),
+            display_name: None,
+            context_usage: None,
+        }
+    }
+
+    pub fn assistant(
+        content: impl Into<String>,
+        display_name: Option<String>,
+        context_usage: Option<ContextUsage>,
+    ) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content: content.into(),
+            timestamp: Self::now_timestamp(),
+            display_name,
+            context_usage,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -93,4 +134,13 @@ impl ChatAttachment {
         }
     }
 
+}
+
+/// Represents an individual download in progress
+#[derive(Debug, Clone)]
+pub struct DownloadItem {
+    pub url: String,
+    pub progress: Option<u8>,
+    pub frame: u8,
+    pub last_tick: Option<std::time::Instant>,
 }

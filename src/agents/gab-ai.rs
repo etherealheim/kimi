@@ -1,37 +1,8 @@
 use color_eyre::Result;
-use reqwest::blocking::Client;
-use serde::{Deserialize, Serialize};
-use std::time::Duration;
+
+use crate::agents::openai_compat;
 
 const DEFAULT_GAB_BASE_URL: &str = "https://gab.ai/v1";
-
-#[derive(Debug, Deserialize)]
-struct GabChatResponse {
-    choices: Vec<GabChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GabChoice {
-    message: GabMessage,
-}
-
-#[derive(Debug, Deserialize)]
-struct GabMessage {
-    content: String,
-}
-
-#[derive(Debug, Serialize)]
-struct GabChatRequest {
-    model: String,
-    messages: Vec<GabChatMessage>,
-    stream: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct GabChatMessage {
-    role: String,
-    content: String,
-}
 
 pub fn default_base_url() -> String {
     DEFAULT_GAB_BASE_URL.to_string()
@@ -44,28 +15,14 @@ pub fn chat(
     messages: &[crate::agents::ChatMessage],
 ) -> Result<String> {
     let model = model.to_lowercase();
-    let chat_messages = messages
-        .iter()
-        .map(|msg| GabChatMessage {
-            role: match msg.role {
-                crate::agents::MessageRole::System => "system".to_string(),
-                crate::agents::MessageRole::User => "user".to_string(),
-                crate::agents::MessageRole::Assistant => "assistant".to_string(),
-            },
-            content: msg.content.clone(),
-        })
-        .collect();
-
-    let request = GabChatRequest {
+    let request = openai_compat::OpenAIChatRequest {
         model,
-        messages: chat_messages,
+        messages: openai_compat::convert_messages(messages),
         stream: false,
+        tools: None,
     };
 
-    let client = Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(60))
-        .build()?;
+    let client = openai_compat::build_client()?;
     let mut last_error: Option<color_eyre::Report> = None;
     for base in gab_base_candidates(base_url) {
         let url = format!("{}/chat/completions", base.trim_end_matches('/'));
@@ -78,12 +35,8 @@ pub fn chat(
             Ok(response) => {
                 let status = response.status();
                 if status.is_success() {
-                    let payload: GabChatResponse = response.json()?;
-                    return payload
-                        .choices
-                        .first()
-                        .map(|choice| choice.message.content.clone())
-                        .ok_or_else(|| color_eyre::eyre::eyre!("Gab AI response missing content"));
+                    let payload: openai_compat::OpenAIChatResponse = response.json()?;
+                    return openai_compat::extract_reply(payload, "Gab AI");
                 }
                 let details = response.text().unwrap_or_default();
                 if status.as_u16() == 404 || status.as_u16() == 405 {
