@@ -27,7 +27,8 @@ impl App {
     }
     
     /// Updates emotions and traits after each message exchange (user + assistant).
-    /// Fast, lightweight updates that run per message without debounce.
+    /// Both run sequentially in a single thread to avoid race conditions
+    /// on the shared identity-state.json file (last writer would overwrite the other).
     pub(crate) fn maybe_update_emotions(&self, assistant_response: &str) {
         let Some(manager) = self.agent_manager.clone() else {
             return;
@@ -51,25 +52,22 @@ impl App {
         recent_messages.push(format!("Kimi: {}", assistant_response));
         recent_messages.reverse();
         
-        // Update emotions
         let emotion_job = EmotionUpdateJob {
             manager: manager.clone(),
             agent: agent.clone(),
             recent_messages: recent_messages.clone(),
         };
-        
-        std::thread::spawn(move || {
-            let _ = crate::services::identity::update_emotions_fast(emotion_job);
-        });
-        
-        // Update traits gradually (small changes per message)
         let trait_job = TraitUpdateJob {
             manager,
             agent,
             recent_messages,
         };
-        
+
+        // Run emotions then traits sequentially in one thread.
+        // This ensures emotions are written to disk before traits read the state,
+        // preventing the trait write from overwriting emotion changes.
         std::thread::spawn(move || {
+            let _ = crate::services::identity::update_emotions_fast(emotion_job);
             let _ = crate::services::identity::update_traits_gradual(trait_job);
         });
     }

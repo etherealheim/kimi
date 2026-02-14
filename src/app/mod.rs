@@ -71,6 +71,12 @@ pub enum AgentEvent {
         query: String,
         notes: Vec<crate::services::obsidian::NoteSnippet>,
     },
+    CacheRecallContext {
+        context: String,
+    },
+    FollowUpSuggestions {
+        suggestions: Vec<String>,
+    },
     TopicsExtracted {
         topics: Vec<String>,
         conversation_id: String,
@@ -111,6 +117,12 @@ pub struct App {
     pub chat_scroll_offset: usize,
     pub chat_auto_scroll: bool, // Whether to auto-scroll to bottom on new messages
     pub cached_obsidian_notes: Option<(String, Vec<crate::services::obsidian::NoteSnippet>)>, // (query, notes) for follow-up questions
+    pub cached_recall_context: Option<String>, // past conversation content for follow-up questions
+
+    // Follow-up suggestion pills
+    pub follow_up_suggestions: Vec<String>,
+    pub suggestion_selected_index: usize,
+    pub suggestion_mode_active: bool,
 
     // Model selection fields
     pub available_models: HashMap<String, Vec<AvailableModel>>,
@@ -314,6 +326,10 @@ impl App {
             summary_frame: 0,
             last_summary_tick: None,
             cached_obsidian_notes: None,
+            cached_recall_context: None,
+            follow_up_suggestions: Vec::new(),
+            suggestion_selected_index: 0,
+            suggestion_mode_active: false,
             comfyui_process: None,
             projects: Vec::new(),
             project_entries: Vec::new(),

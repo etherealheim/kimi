@@ -39,6 +39,14 @@ impl App {
                 AgentEvent::CacheObsidianNotes { query, notes } => {
                     self.cached_obsidian_notes = Some((query, notes));
                 }
+                AgentEvent::CacheRecallContext { context } => {
+                    self.cached_recall_context = Some(context);
+                }
+                AgentEvent::FollowUpSuggestions { suggestions } => {
+                    self.follow_up_suggestions = suggestions;
+                    self.suggestion_selected_index = 0;
+                    self.suggestion_mode_active = false;
+                }
                 AgentEvent::TopicsExtracted { topics, conversation_id } => {
                     self.handle_topics_extracted(topics, conversation_id);
                 }
@@ -82,6 +90,7 @@ impl App {
         }
 
         self.maybe_update_emotions(&response);
+        self.spawn_follow_up_suggestions(&response);
 
         if self.auto_tts_enabled
             && let Some(tts) = &self.tts_service
@@ -323,6 +332,54 @@ impl App {
         }
     }
 
+    /// Spawns a background thread to generate follow-up question suggestions
+    fn spawn_follow_up_suggestions(&self, response: &str) {
+        let Some(manager) = self.agent_manager.clone() else {
+            return;
+        };
+        let Some(agent) = self.current_agent.clone() else {
+            return;
+        };
+        let Some(agent_tx) = self.agent_tx.clone() else {
+            return;
+        };
+
+        // Build recent context: last user message + assistant response
+        let last_user = self
+            .chat_history
+            .iter()
+            .rev()
+            .find(|message| message.role == crate::app::types::MessageRole::User)
+            .map(|message| message.content.clone())
+            .unwrap_or_default();
+        let response = response.to_string();
+
+        std::thread::spawn(move || {
+            let prompt = format!(
+                "Based on this conversation exchange, suggest exactly 2 short follow-up questions \
+                 the user might want to ask next. Each should be concise (under 8 words).\n\n\
+                 User: {}\nAssistant: {}\n\n\
+                 Return ONLY a JSON array of 2 strings, nothing else:\n\
+                 [\"question 1\", \"question 2\"]",
+                last_user,
+                response.chars().take(500).collect::<String>()
+            );
+
+            let messages = vec![
+                crate::agents::ChatMessage::system(
+                    "You suggest follow-up questions. Output only a JSON array of 2 short strings.",
+                ),
+                crate::agents::ChatMessage::user(prompt),
+            ];
+
+            if let Ok(raw) = manager.chat(&agent, &messages)
+                && let Some(suggestions) = parse_suggestion_array(&raw)
+            {
+                let _ = agent_tx.send(AgentEvent::FollowUpSuggestions { suggestions });
+            }
+        });
+    }
+
     /// Spawns a background thread to generate and save embeddings without blocking the UI
     fn spawn_background_embeddings(
         storage: crate::storage::StorageManager,
@@ -352,4 +409,24 @@ impl App {
             });
         });
     }
+}
+
+/// Parses a JSON array of strings from LLM output, handling common quirks
+fn parse_suggestion_array(raw: &str) -> Option<Vec<String>> {
+    // Try to find JSON array in the response
+    let trimmed = raw.trim();
+    let json_str = if let Some(start) = trimmed.find('[') {
+        let end = trimmed.rfind(']')?;
+        trimmed.get(start..=end)?
+    } else {
+        return None;
+    };
+
+    let parsed: Vec<String> = serde_json::from_str(json_str).ok()?;
+    if parsed.is_empty() {
+        return None;
+    }
+
+    // Take up to 2 suggestions
+    Some(parsed.into_iter().take(2).collect())
 }

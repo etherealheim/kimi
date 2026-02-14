@@ -9,6 +9,7 @@ impl App {
         self.chat_input.clear();
         self.current_conversation_id = None;
         self.personality_text = None;
+        self.cached_recall_context = None;
         if let Some(agent) = &self.current_agent {
             let agent_name = agent.name.clone();
             let _ = self.load_agent(&agent_name);

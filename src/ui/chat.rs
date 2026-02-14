@@ -13,19 +13,26 @@ use crate::app::{App, MessageRole};
 
 /// Primary chat view with header, messages, input, and footer
 pub fn render_chat_view(f: &mut Frame, app: &App) {
+    let has_suggestions = !app.follow_up_suggestions.is_empty();
+    let suggestion_height = if has_suggestions { 3 } else { 0 };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Chat history
-            Constraint::Length(3), // Input
-            Constraint::Length(3), // Footer
+            Constraint::Length(3),                     // Header
+            Constraint::Min(0),                        // Chat history
+            Constraint::Length(suggestion_height),      // Suggestions
+            Constraint::Length(3),                      // Input
+            Constraint::Length(3),                      // Footer
         ])
         .split(f.area());
 
-    if let [header, history, input, footer] = &chunks[..] {
+    if let [header, history, suggestions, input, footer] = &chunks[..] {
         render_chat_header(f, app, *header);
         render_chat_history(f, app, *history);
+        if has_suggestions {
+            render_follow_up_suggestions(f, app, *suggestions);
+        }
         render_chat_input(f, app, *input);
         render_chat_footer(f, app, *footer);
     }
@@ -560,6 +567,67 @@ fn add_spacing(lines: &mut Vec<Line>, count: usize) {
         }
         remaining -= 1;
     }
+}
+
+/// Renders follow-up suggestion pills as selectable options
+fn render_follow_up_suggestions(frame: &mut Frame, app: &App, area: Rect) {
+    let suggestions = &app.follow_up_suggestions;
+    if suggestions.is_empty() {
+        return;
+    }
+
+    let inner_width = area.width.saturating_sub(4) as usize; // border + padding
+    let pill_count = suggestions.len();
+    let separator_width = 3; // " │ " between pills
+    let total_separator = separator_width * pill_count.saturating_sub(1);
+    let pill_text_budget = inner_width.saturating_sub(total_separator) / pill_count.max(1);
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::raw(" "));
+
+    for (index, suggestion) in suggestions.iter().enumerate() {
+        let is_selected = app.suggestion_mode_active && app.suggestion_selected_index == index;
+
+        // Truncate text to fit budget
+        let display_text: String = if suggestion.chars().count() > pill_text_budget {
+            let truncated: String = suggestion
+                .chars()
+                .take(pill_text_budget.saturating_sub(1))
+                .collect();
+            format!("{}…", truncated)
+        } else {
+            suggestion.clone()
+        };
+
+        let text_style = if is_selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Magenta)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+
+        spans.push(Span::styled(format!(" {} ", display_text), text_style));
+
+        // Add separator between pills
+        if index < pill_count.saturating_sub(1) {
+            spans.push(Span::styled(
+                " │ ",
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
+
+    let paragraph = Paragraph::new(Line::from(spans))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        )
+        .alignment(Alignment::Left);
+
+    frame.render_widget(paragraph, area);
 }
 
 fn render_chat_input(frame: &mut Frame, app: &App, area: Rect) {

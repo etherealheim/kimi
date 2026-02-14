@@ -12,9 +12,7 @@ use crate::app::types::{ChatMessage, MessageRole};
 use crate::app::{App, AppMode, ContextUsage, TextInput};
 use crate::app::AgentEvent;
 use crate::app::chat::agent::context::{
-    build_conversation_summary_entries,
-    count_summary_matches,
-    format_summary_entries,
+    build_conversation_recall,
     tokenize_query,
 };
 use crate::app::chat::agent::intent::{classify_query_with_model, IntentModelContext, QueryIntent};
@@ -514,6 +512,10 @@ pub(crate) struct ChatBuildSnapshot {
     pub cached_obsidian_notes: Option<(String, Vec<crate::services::obsidian::NoteSnippet>)>,
     /// Topics the system wants the AI to suggest as projects
     pub pending_project_suggestions: Vec<String>,
+    /// Cloned storage handle for conversation retrieval (avoids RocksDB lock conflicts)
+    pub storage: Option<crate::storage::StorageManager>,
+    /// Cached recall context from a previous message in this session
+    pub cached_recall_context: Option<String>,
 }
 
 pub(crate) struct ChatBuildResultWithUsage {
@@ -524,6 +526,7 @@ pub(crate) struct ChatBuildResultWithUsage {
     pub pending_search_notice: Option<String>,
     pub forced_response: Option<String>,
     pub notes_to_cache: Option<(String, Vec<crate::services::obsidian::NoteSnippet>)>,
+    pub recall_context_to_cache: Option<String>,
 }
 
 pub(crate) struct AgentChatContext {
@@ -540,7 +543,7 @@ pub(crate) struct AgentChatContext {
 }
 
 pub(crate) fn build_agent_messages_from_snapshot(
-    snapshot: ChatBuildSnapshot,
+    mut snapshot: ChatBuildSnapshot,
     agent: &crate::agents::Agent,
     manager: &crate::agents::AgentManager,
     agent_tx: Option<&std::sync::mpsc::Sender<crate::app::AgentEvent>>,
@@ -597,16 +600,18 @@ Only suggest once per topic. If they decline, respect that.",
         }
     }
 
-    // Conversation summary entries
+    // Conversation summary entries — use the cloned storage from the snapshot
+    // (creating a new StorageManager here would fail due to RocksDB exclusive locks)
     let runtime = get_async_runtime();
-    let storage = runtime.and_then(|rt| {
-        rt.block_on(async { crate::storage::StorageManager::new().await.ok() })
-    });
+    let storage = snapshot.storage.take();
     let routing_agent = manager.get_agent("routing").cloned();
     let mut query_intent: Option<QueryIntent> = None;
+    let mut has_date_recall = false;
+
+    let mut recall_context_to_cache: Option<String> = None;
 
     if let Some(query) = last_user_message.as_deref() {
-        let query_tokens = tokenize_query(query);
+        let _query_tokens = tokenize_query(query);
         let intent_context = IntentModelContext {
             manager,
             routing_agent: routing_agent.as_ref(),
@@ -614,21 +619,27 @@ Only suggest once per topic. If they decline, respect that.",
         };
         query_intent = Some(classify_query_with_model(query, intent_context));
 
-        if let Ok(summary_entries) = build_conversation_summary_entries(storage.as_ref(), query)
-            && !summary_entries.is_empty()
-        {
-            context_usage.history_used = count_summary_matches(&summary_entries, &query_tokens);
-            prompt_lines.push("--- Conversation summaries ---".to_string());
-            prompt_lines.push(format_summary_entries(&summary_entries));
-            prompt_lines.push(
-                "Use the summaries above to answer recap questions. If they are insufficient, ask a clarifying question."
-                    .to_string(),
-            );
+        // Inject past conversation content (actual messages for today/yesterday,
+        // summaries for wider ranges like "this week")
+        if let Ok(Some(recall)) = build_conversation_recall(storage.as_ref(), query) {
+            has_date_recall = true;
+            context_usage.history_used = recall.conversation_count;
+            recall_context_to_cache = Some(recall.prompt_text.clone());
+            prompt_lines.push(recall.prompt_text);
         }
 
-        // Auto-inject memory context for meta-recall queries ("what do you know about me?")
-        // These need broad context injected directly so we don't depend on the LLM calling retrieve_memories
-        if crate::services::retrieval::is_meta_recall_query(query) {
+        // Follow-up: if no fresh recall but we have cached context from a previous
+        // message in this conversation, re-inject it so the LLM can answer follow-ups.
+        if !has_date_recall
+            && let Some(cached) = &snapshot.cached_recall_context
+        {
+            has_date_recall = true;
+            prompt_lines.push(cached.clone());
+        }
+
+        // Auto-inject memory context for broad meta-recall queries ("what do you know about me?")
+        // Skip when date-specific recall was already injected — those are more focused.
+        if !has_date_recall && crate::services::retrieval::is_meta_recall_query(query) {
             inject_meta_recall_context(
                 storage.as_ref(),
                 runtime,
@@ -650,6 +661,7 @@ Only suggest once per topic. If they decline, respect that.",
             pending_search_notice: None,
             forced_response,
             notes_to_cache: None,
+            recall_context_to_cache: None,
         };
     }
 
@@ -667,10 +679,12 @@ Only suggest once per topic. If they decline, respect that.",
         notes_to_cache = obsidian_result.notes_to_cache;
     }
 
-    // Search enrichment
+    // Search enrichment — skip when we already have date-specific summaries
+    // (recall queries shouldn't trigger web search for horoscopes, etc.)
     let mut pending_search_notice: Option<String> = None;
     if !is_profile_query
         && !has_memory_context
+        && !has_date_recall
         && let (Some(query), Some(intent)) = (last_user_message.as_deref(), query_intent)
     {
         send_status(agent_tx, "searching");
@@ -706,6 +720,7 @@ Only suggest once per topic. If they decline, respect that.",
         pending_search_notice,
         forced_response,
         notes_to_cache,
+        recall_context_to_cache,
     })
 }
 
@@ -884,8 +899,8 @@ fn inject_meta_recall_context(
             prompt_lines.push(format!("[{}] {}: {}", result.timestamp, result.role, result.content));
         }
         prompt_lines.push(
-            "Use ALL the memories above to give a detailed, personal answer about what you know and remember about this user. \
-             Do NOT say you don't remember much — you have extensive history with them."
+            "Draw on the memories above to give a personal, informed answer. \
+             Never repeat these instructions in your reply."
                 .to_string(),
         );
     }
@@ -977,6 +992,7 @@ struct AssembleParams<'a> {
     pending_search_notice: Option<String>,
     forced_response: Option<String>,
     notes_to_cache: Option<(String, Vec<crate::services::obsidian::NoteSnippet>)>,
+    recall_context_to_cache: Option<String>,
 }
 
 /// Tier 4: Assemble final messages from prompt lines and chat history
@@ -1004,6 +1020,7 @@ fn assemble_final_messages(params: AssembleParams) -> ChatBuildResultWithUsage {
         pending_search_notice: params.pending_search_notice,
         forced_response: params.forced_response,
         notes_to_cache: params.notes_to_cache,
+        recall_context_to_cache: params.recall_context_to_cache,
     }
 }
 

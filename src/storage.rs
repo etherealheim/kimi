@@ -34,6 +34,13 @@ pub struct ConversationMessage {
     pub display_name: Option<String>,
 }
 
+/// A conversation with its messages, used for date-range recall
+#[derive(Debug, Clone)]
+pub struct ConversationWithMessages {
+    pub created_at: String,
+    pub messages: Vec<StoredMessage>,
+}
+
 /// Data for saving a new conversation
 pub struct ConversationData<'a> {
     pub agent_name: &'a str,
@@ -553,6 +560,74 @@ impl StorageManager {
         let messages: Vec<StoredMessage> = response.take(0)?;
 
         Ok((agent_name, messages))
+    }
+
+    /// Loads messages from all conversations within a date range (RFC 3339 strings).
+    /// Returns conversations grouped with their messages, newest conversations first.
+    /// Each conversation is truncated to `max_messages_per_conversation` messages.
+    pub async fn load_conversations_in_date_range(
+        &self,
+        range_start: &str,
+        range_end: &str,
+        max_messages_per_conversation: usize,
+    ) -> Result<Vec<ConversationWithMessages>> {
+        // First, get conversations in the date range
+        #[derive(Debug, Deserialize)]
+        struct ConvRow {
+            id: surrealdb::sql::Thing,
+            created_at: String,
+        }
+
+        let mut conv_response = self.db.query("
+            SELECT id, created_at
+            FROM conversation
+            WHERE created_at >= $start AND created_at < $end
+            ORDER BY created_at ASC
+        ")
+        .bind(("start", range_start.to_string()))
+        .bind(("end", range_end.to_string()))
+        .await?;
+
+        let conv_rows: Vec<ConvRow> = conv_response.take(0)?;
+
+        let mut results = Vec::new();
+        for row in conv_rows {
+            let conversation_ref = Thing::from(("conversation", row.id.id.to_string().as_str()));
+            let mut msg_response = self.db.query("
+                SELECT role, content, timestamp, display_name
+                FROM message
+                WHERE conversation = $conv_id AND role != 'System'
+                ORDER BY timestamp ASC
+            ")
+            .bind(("conv_id", conversation_ref))
+            .await?;
+
+            let messages: Vec<StoredMessage> = msg_response.take(0)?;
+            if messages.is_empty() {
+                continue;
+            }
+
+            // Take the last N messages to keep the most recent context
+            let truncated: Vec<StoredMessage> = if messages.len() > max_messages_per_conversation {
+                messages
+                    .into_iter()
+                    .rev()
+                    .take(max_messages_per_conversation)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect()
+            } else {
+                messages
+            };
+
+            results.push(ConversationWithMessages {
+                created_at: row.created_at,
+                messages: truncated,
+            });
+        }
+
+        Ok(results)
     }
 
     /// Deletes a conversation and all its messages

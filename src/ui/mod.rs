@@ -18,14 +18,9 @@ pub fn render(f: &mut Frame, app: &App) {
         AppMode::Chat => chat::render_chat_view(f, app),
         AppMode::CommandMenu => chat::render_chat_view(f, app),
         AppMode::ModelSelection => models::render_model_selection(f, app),
-        AppMode::Connect => {
-            // Show chat view as background, then overlay connect provider selection
-            chat::render_chat_view(f, app);
-            connect::render_connect_providers(f, app);
-        }
+        AppMode::Connect => connect::render_connect_view(f, app),
         AppMode::ApiKeyInput => {
-            // Show chat view as background, then overlay API key input
-            chat::render_chat_view(f, app);
+            connect::render_connect_view(f, app);
             connect::render_api_key_input(f, app);
         }
         AppMode::History => history::render_history_view(f, app),

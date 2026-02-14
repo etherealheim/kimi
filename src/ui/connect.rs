@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
@@ -8,76 +8,96 @@ use ratatui::{
 
 use crate::app::App;
 use crate::ui::components;
-/// Render provider selection modal
-pub fn render_connect_providers(f: &mut Frame, app: &App) {
-    let area = components::render_modal_frame(f, f.area(), 50, 50, "API Providers");
 
+/// Render full-screen connect view with header, provider list, and footer
+pub fn render_connect_view(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(2)
-        .constraints([Constraint::Min(0)])
-        .split(area);
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Provider list
+            Constraint::Length(3), // Footer
+        ])
+        .split(frame.area());
 
-    let Some([list_area]) = chunks.get(0..1).and_then(|s| <&[_; 1]>::try_from(s).ok()) else {
-        return;
-    };
+    if let [header, list, footer] = &chunks[..] {
+        render_connect_header(frame, *header);
+        render_provider_list(frame, app, *list);
+        render_connect_footer(frame, *footer);
+    }
+}
 
-    let items: Vec<ListItem> = app
-        .connect_providers
-        .iter()
-        .enumerate()
-        .map(|(i, provider)| {
-            let selected = i == app.connect_selected_provider;
+fn render_connect_header(frame: &mut Frame, area: Rect) {
+    components::render_view_header(frame, area, "Connect");
+}
 
-            let (status_text, status_style, icon) = match provider.as_str() {
-                "ElevenLabs" if !app.connect_elevenlabs_key.is_empty() => {
-                    ("configured", Style::default().fg(Color::Green), "●")
-                }
-                "Venice AI" if !app.connect_venice_key.is_empty() => {
-                    ("configured", Style::default().fg(Color::Green), "●")
-                }
-                "Gab AI" if !app.connect_gab_key.is_empty() => {
-                    ("configured", Style::default().fg(Color::Green), "●")
-                }
-                "Brave Search" if !app.connect_brave_key.is_empty() => {
-                    ("configured", Style::default().fg(Color::Green), "●")
-                }
-                "Obsidian" if !app.connect_obsidian_vault.trim().is_empty() => {
-                    ("configured", Style::default().fg(Color::Green), "●")
-                }
-                "ElevenLabs" | "Venice AI" | "Gab AI" | "Brave Search" => {
-                    ("not configured", Style::default().fg(Color::DarkGray), "○")
-                }
-                "Obsidian" => ("not configured", Style::default().fg(Color::DarkGray), "○"),
-                _ => ("unknown", Style::default().fg(Color::Red), "?"),
-            };
+fn render_provider_list(frame: &mut Frame, app: &App, area: Rect) {
+    let mut items = vec![ListItem::new(Line::from(""))];
 
-            let name_style = components::selected_name_style(selected);
+    for (index, provider) in app.connect_providers.iter().enumerate() {
+        let is_current = index == app.connect_selected_provider;
 
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    components::selection_prefix(selected),
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled(icon, status_style),
-                Span::raw("  "),
-                Span::styled(provider, name_style),
-                Span::styled(
-                    format!("  {}", status_text),
-                    components::selected_secondary_style(selected, status_style),
-                ),
-            ]))
-        })
-        .collect();
+        let (status_text, status_style, icon) = provider_status(app, provider);
+        let name_style = components::selected_name_style(is_current);
 
-    f.render_widget(
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(
+                components::selection_prefix(is_current),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(icon, status_style),
+            Span::raw("  "),
+            Span::styled(provider, name_style),
+            Span::styled(
+                format!("  {}", status_text),
+                components::selected_secondary_style(is_current, status_style),
+            ),
+        ])));
+    }
+
+    frame.render_widget(
         List::new(items).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Select Provider ")
+                .title(" Providers ")
                 .border_style(Style::default().fg(Color::DarkGray)),
         ),
-        *list_area,
+        area,
+    );
+}
+
+/// Returns (status_text, status_style, icon) for a given provider
+fn provider_status<'a>(app: &App, provider: &str) -> (&'a str, Style, &'a str) {
+    match provider {
+        "ElevenLabs" if !app.connect_elevenlabs_key.is_empty() => {
+            ("configured", Style::default().fg(Color::Green), "●")
+        }
+        "Venice AI" if !app.connect_venice_key.is_empty() => {
+            ("configured", Style::default().fg(Color::Green), "●")
+        }
+        "Gab AI" if !app.connect_gab_key.is_empty() => {
+            ("configured", Style::default().fg(Color::Green), "●")
+        }
+        "Brave Search" if !app.connect_brave_key.is_empty() => {
+            ("configured", Style::default().fg(Color::Green), "●")
+        }
+        "Obsidian" if !app.connect_obsidian_vault.trim().is_empty() => {
+            ("configured", Style::default().fg(Color::Green), "●")
+        }
+        "ElevenLabs" | "Venice AI" | "Gab AI" | "Brave Search" | "Obsidian" => {
+            ("not configured", Style::default().fg(Color::DarkGray), "○")
+        }
+        _ => ("unknown", Style::default().fg(Color::Red), "?"),
+    }
+}
+
+fn render_connect_footer(frame: &mut Frame, area: Rect) {
+    components::render_navigation_footer(
+        frame,
+        area,
+        "CONNECT",
+        &[("Enter", "configure"), ("↑↓", "navigate"), ("Esc", "back")],
+        &[],
     );
 }
 

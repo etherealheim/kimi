@@ -53,6 +53,10 @@ impl App {
             return Ok(());
         }
 
+        // Clear follow-up suggestions when sending a new message
+        self.follow_up_suggestions.clear();
+        self.suggestion_mode_active = false;
+
         let command_content = self.chat_input.content().trim().to_string();
         if self.handle_convert_command()? {
             if !command_content.is_empty() {
@@ -121,6 +125,11 @@ impl App {
         // This prevents UI blocking from slow embedding operations
         let pre_retrieved = Vec::new();
 
+        // Ensure storage is initialized so we can clone it for the build thread.
+        // Creating a new StorageManager in the background thread would fail because
+        // RocksDB holds exclusive file locks on the database directory.
+        self.ensure_storage();
+
         let snapshot = crate::app::chat::agent::ChatBuildSnapshot {
             system_prompt: agent.system_prompt.clone(),
             chat_history: self.chat_history.clone(),
@@ -133,6 +142,8 @@ impl App {
             pre_retrieved_messages: pre_retrieved,
             cached_obsidian_notes: self.cached_obsidian_notes.clone(),
             pending_project_suggestions: self.pending_project_suggestions.clone(),
+            storage: self.storage.clone(),
+            cached_recall_context: self.cached_recall_context.clone(),
         };
         // Clear pending suggestions after one message cycle so they don't repeat
         self.pending_project_suggestions.clear();
@@ -155,6 +166,11 @@ impl App {
             // Send notes for caching if fetched
             if let Some((query, notes)) = build_result.notes_to_cache {
                 let _ = agent_tx.send(crate::app::AgentEvent::CacheObsidianNotes { query, notes });
+            }
+
+            // Cache recall context for follow-up questions
+            if let Some(context) = build_result.recall_context_to_cache {
+                let _ = agent_tx.send(crate::app::AgentEvent::CacheRecallContext { context });
             }
 
             if let Some(response) = build_result.forced_response {

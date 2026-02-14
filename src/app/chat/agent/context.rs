@@ -1,16 +1,150 @@
 use crate::services::dates::DateReference;
-use crate::storage::ConversationSummary;
-use chrono::{Datelike, Duration, Local};
+use crate::storage::{ConversationSummary, ConversationWithMessages};
+use chrono::{Datelike, Duration, Local, NaiveDate};
 use color_eyre::Result;
 
+/// Maximum messages per conversation when loading full content
+const MAX_MESSAGES_PER_CONVERSATION: usize = 8;
+/// Maximum total characters across all conversations to stay within context budget
+const MAX_TOTAL_CHARS: usize = 6000;
+
+// ── Public result types ─────────────────────────────────────────────────────
+
+/// Recall result injected into the system prompt
 #[derive(Debug, Clone)]
-pub struct SummaryEntry {
-    pub date: String,
-    pub summary: String,
+pub struct RecallResult {
+    /// Number of conversations recalled
+    pub conversation_count: usize,
+    /// Formatted text block for the system prompt
+    pub prompt_text: String,
 }
 
+// ── Main entry point ────────────────────────────────────────────────────────
+
+/// Builds conversation recall context for the system prompt.
+/// For short ranges (today, yesterday) loads actual message content.
+/// For wider ranges (this week, etc.) falls back to summaries.
+pub fn build_conversation_recall(
+    storage: Option<&crate::storage::StorageManager>,
+    query: &str,
+) -> Result<Option<RecallResult>> {
+    let Some(storage) = storage else {
+        return Ok(None);
+    };
+    let Some(range) = recall_time_range(query) else {
+        return Ok(None);
+    };
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    let today = Local::now().date_naive();
+    let (start_date, end_date) = range_to_dates(range, today);
+
+    // For short ranges (1-2 days), load actual messages
+    let day_span = (end_date - start_date).num_days() + 1;
+    if day_span <= 2 {
+        let start_rfc = format!("{}T00:00:00+00:00", start_date);
+        let end_rfc = format!("{}T00:00:00+00:00", end_date + Duration::days(1));
+
+        let conversations = runtime.block_on(async {
+            storage
+                .load_conversations_in_date_range(
+                    &start_rfc,
+                    &end_rfc,
+                    MAX_MESSAGES_PER_CONVERSATION,
+                )
+                .await
+        })?;
+
+        if conversations.is_empty() {
+            return Ok(None);
+        }
+
+        let prompt_text = format_conversation_content(&conversations);
+        return Ok(Some(RecallResult {
+            conversation_count: conversations.len(),
+            prompt_text,
+        }));
+    }
+
+    // For wider ranges, fall back to summaries
+    let conversations = runtime.block_on(async { storage.load_conversations().await })?;
+    let entries = filter_summaries_by_range(&conversations, start_date, end_date);
+    if entries.is_empty() {
+        return Ok(None);
+    }
+
+    let prompt_text = format_summary_recall(&entries);
+    Ok(Some(RecallResult {
+        conversation_count: entries.len(),
+        prompt_text,
+    }))
+}
+
+// ── Formatting ──────────────────────────────────────────────────────────────
+
+/// Formats actual conversation messages grouped by conversation
+fn format_conversation_content(conversations: &[ConversationWithMessages]) -> String {
+    let mut lines = Vec::new();
+    lines.push("--- Past conversations ---".to_string());
+    lines.push(
+        "Below are actual messages from your past conversations with this user. \
+         Use them to answer naturally — never say you can't remember."
+            .to_string(),
+    );
+
+    let mut total_chars = 0;
+    for (index, conversation) in conversations.iter().enumerate() {
+        let time_label = parse_conversation_time(&conversation.created_at);
+        lines.push(format!("\n[Conversation {}, {}]", index + 1, time_label));
+
+        for message in &conversation.messages {
+            let role_label = match message.role.as_str() {
+                "User" => "User",
+                "Assistant" => "Kimi",
+                _ => continue,
+            };
+            let line = format!("{}: {}", role_label, message.content);
+            total_chars += line.len();
+            if total_chars > MAX_TOTAL_CHARS {
+                lines.push("(... earlier messages trimmed ...)".to_string());
+                return lines.join("\n");
+            }
+            lines.push(line);
+        }
+    }
+
+    lines.join("\n")
+}
+
+struct SummaryLine {
+    date: String,
+    summary: String,
+}
+
+fn format_summary_recall(entries: &[SummaryLine]) -> String {
+    let mut lines = Vec::new();
+    lines.push("--- Conversation summaries ---".to_string());
+    lines.push(
+        "Use the summaries below to answer recap questions. \
+         If they are insufficient, ask a clarifying question."
+            .to_string(),
+    );
+    for entry in entries {
+        lines.push(format!("- {}: {}", entry.date, entry.summary));
+    }
+    lines.join("\n")
+}
+
+fn parse_conversation_time(created_at: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(created_at)
+        .ok()
+        .map_or_else(|| "unknown time".to_string(), |dt| dt.format("%H:%M").to_string())
+}
+
+// ── Time range detection ────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, Copy)]
-enum SummaryRange {
+enum RecallRange {
     Today,
     Yesterday,
     ThisWeek,
@@ -18,102 +152,48 @@ enum SummaryRange {
     LastDays(u32),
 }
 
-pub fn build_conversation_summary_entries(
-    storage: Option<&crate::storage::StorageManager>,
-    query: &str,
-) -> Result<Vec<SummaryEntry>> {
-    let Some(storage) = storage else {
-        return Ok(Vec::new());
-    };
-    let Some(range) = summary_time_range(query) else {
-        return Ok(Vec::new());
-    };
-    
-    let runtime = tokio::runtime::Runtime::new()?;
-    let conversations = runtime.block_on(async {
-        storage.load_conversations().await
-    })?;
-    
-    Ok(filter_summaries_by_range(&conversations, range))
-}
-
-pub fn format_summary_entries(entries: &[SummaryEntry]) -> String {
-    entries
-        .iter()
-        .map(|entry| format!("- {}: {}", entry.date, entry.summary))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-pub fn count_summary_matches(entries: &[SummaryEntry], _tokens: &[String]) -> usize {
-    entries.len()
-}
-
-pub fn tokenize_query(query: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    for raw in query.split_whitespace() {
-        let cleaned = raw
-            .trim_matches(|character: char| !character.is_alphanumeric() && character != '-')
-            .to_lowercase();
-        if cleaned.len() < 2 {
-            continue;
-        }
-        if !tokens.contains(&cleaned) {
-            tokens.push(cleaned);
-        }
-    }
-    tokens
-}
-
-fn summary_time_range(query: &str) -> Option<SummaryRange> {
+fn recall_time_range(query: &str) -> Option<RecallRange> {
     let lowered = query.to_lowercase();
-    if !has_summary_intent(&lowered) {
+    if !has_recall_intent(&lowered) {
         return None;
     }
-    
+
     // Try comprehensive date parsing first
     if let Some(date_ref) = crate::services::dates::parse_date_reference(&lowered) {
         return match date_ref {
             DateReference::Date(date) => {
-                // Single date - check if it's today/yesterday
                 let today = Local::now().date_naive();
                 if date == today {
-                    Some(SummaryRange::Today)
+                    Some(RecallRange::Today)
                 } else if date == today - Duration::days(1) {
-                    Some(SummaryRange::Yesterday)
+                    Some(RecallRange::Yesterday)
                 } else {
-                    // Use a 1-day range for this specific date
                     None
                 }
             }
             DateReference::Week(week) => {
-                // Week reference
                 let current = crate::services::dates::current_week();
                 let last = crate::services::dates::last_week();
                 if week == current {
-                    Some(SummaryRange::ThisWeek)
+                    Some(RecallRange::ThisWeek)
                 } else if week == last {
-                    Some(SummaryRange::LastWeek)
+                    Some(RecallRange::LastWeek)
                 } else {
                     None
                 }
             }
-            DateReference::Range(_range) => {
-                // Range - for now, treat month/year ranges as "this week" fallback
-                // TODO: Could add more granular range support
-                Some(SummaryRange::ThisWeek)
-            }
+            DateReference::Range(_) => Some(RecallRange::ThisWeek),
         };
     }
-    
+
     // Fallback to manual parsing
     if let Some(days) = parse_last_days(&lowered) {
-        return Some(SummaryRange::LastDays(days));
+        return Some(RecallRange::LastDays(days));
     }
     None
 }
 
-fn has_summary_intent(lowered: &str) -> bool {
+fn has_recall_intent(lowered: &str) -> bool {
     let triggers = [
         "remember",
         "recap",
@@ -128,6 +208,25 @@ fn has_summary_intent(lowered: &str) -> bool {
         "this week",
     ];
     triggers.iter().any(|term| lowered.contains(term))
+}
+
+fn range_to_dates(range: RecallRange, today: NaiveDate) -> (NaiveDate, NaiveDate) {
+    match range {
+        RecallRange::Today => (today, today),
+        RecallRange::Yesterday => {
+            let yesterday = today - Duration::days(1);
+            (yesterday, yesterday)
+        }
+        RecallRange::ThisWeek => {
+            let days_from_monday = today.weekday().num_days_from_monday() as i64;
+            (today - Duration::days(days_from_monday), today)
+        }
+        RecallRange::LastWeek => (today - Duration::days(7), today - Duration::days(1)),
+        RecallRange::LastDays(days) => {
+            let span = i64::from(days.max(1));
+            (today - Duration::days(span), today)
+        }
+    }
 }
 
 fn parse_last_days(lowered: &str) -> Option<u32> {
@@ -149,24 +248,13 @@ fn parse_last_days(lowered: &str) -> Option<u32> {
     None
 }
 
+// ── Summary fallback for wider ranges ───────────────────────────────────────
+
 fn filter_summaries_by_range(
     conversations: &[ConversationSummary],
-    range: SummaryRange,
-) -> Vec<SummaryEntry> {
-    let today = Local::now().date_naive();
-    let (start, end) = match range {
-        SummaryRange::Today => (today, today),
-        SummaryRange::Yesterday => (today - Duration::days(1), today - Duration::days(1)),
-        SummaryRange::ThisWeek => {
-            let days_from_monday = today.weekday().num_days_from_monday() as i64;
-            (today - Duration::days(days_from_monday), today)
-        }
-        SummaryRange::LastWeek => (today - Duration::days(7), today - Duration::days(1)),
-        SummaryRange::LastDays(days) => {
-            let span = i64::from(days.max(1));
-            (today - Duration::days(span), today)
-        }
-    };
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Vec<SummaryLine> {
     let mut entries = Vec::new();
     for convo in conversations {
         let Some(date) = parse_conversation_date(&convo.created_at) else {
@@ -175,23 +263,51 @@ fn filter_summaries_by_range(
         if date < start || date > end {
             continue;
         }
-        let summary = convo
-            .summary
-            .clone()
-            .or_else(|| convo.detailed_summary.clone())
-            .unwrap_or_else(|| "Conversation".to_string());
-        entries.push(SummaryEntry {
+        let summary_text = convo
+            .detailed_summary
+            .as_deref()
+            .filter(|value| is_real_summary(value))
+            .or_else(|| convo.summary.as_deref().filter(|value| is_real_summary(value)));
+        let Some(summary) = summary_text else {
+            continue;
+        };
+        entries.push(SummaryLine {
             date: date.format("%Y-%m-%d").to_string(),
-            summary,
+            summary: summary.to_string(),
         });
     }
     entries
 }
 
-fn parse_conversation_date(created_at: &str) -> Option<chrono::NaiveDate> {
+fn is_real_summary(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty()
+        && !trimmed.eq_ignore_ascii_case("conversation")
+        && !trimmed.eq_ignore_ascii_case(crate::app::chat::summary::PENDING_SUMMARY_LABEL)
+}
+
+fn parse_conversation_date(created_at: &str) -> Option<NaiveDate> {
     chrono::DateTime::parse_from_rfc3339(created_at)
         .ok()
         .map(|value| value.date_naive())
+}
+
+// ── Re-exports used by other modules ────────────────────────────────────────
+
+pub fn tokenize_query(query: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for raw in query.split_whitespace() {
+        let cleaned = raw
+            .trim_matches(|character: char| !character.is_alphanumeric() && character != '-')
+            .to_lowercase();
+        if cleaned.len() < 2 {
+            continue;
+        }
+        if !tokens.contains(&cleaned) {
+            tokens.push(cleaned);
+        }
+    }
+    tokens
 }
 
 pub fn is_personal_recap_query(lowered: &str) -> bool {

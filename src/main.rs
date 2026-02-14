@@ -375,6 +375,11 @@ fn handle_api_key_input_mode(app: &mut App, key_code: KeyCode) -> Result<()> {
 }
 
 fn handle_chat_mode(app: &mut App, key_code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+    // When suggestion mode is active, handle suggestion navigation first
+    if app.suggestion_mode_active {
+        return handle_suggestion_keys(app, key_code, modifiers);
+    }
+
     match (key_code, modifiers) {
         (KeyCode::Char('c'), key_modifiers) if key_modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true
@@ -415,6 +420,16 @@ fn handle_chat_mode(app: &mut App, key_code: KeyCode, modifiers: KeyModifiers) -
             if let Err(error) = app.rotate_agent() {
                 app.add_system_message(&format!("Failed to switch agent: {}", error));
             }
+        }
+        // ArrowUp: activate suggestion mode if suggestions exist and input is empty
+        (KeyCode::Up, key_modifiers)
+            if app.chat_input.is_empty()
+                && !app.follow_up_suggestions.is_empty()
+                && app.chat_auto_scroll
+                && key_modifiers == KeyModifiers::NONE =>
+        {
+            app.suggestion_mode_active = true;
+            app.suggestion_selected_index = 0;
         }
         (KeyCode::Up, key_modifiers)
             if app.chat_input.is_empty() || key_modifiers.contains(KeyModifiers::CONTROL) =>
@@ -464,6 +479,76 @@ fn handle_chat_mode(app: &mut App, key_code: KeyCode, modifiers: KeyModifiers) -
         | (KeyCode::KeypadBegin, _)
         | (KeyCode::Media(_), _)
         | (KeyCode::Modifier(_), _) => {}
+    }
+    Ok(())
+}
+
+/// Handles keys while suggestion mode is active (navigating follow-up pills)
+fn handle_suggestion_keys(
+    app: &mut App,
+    key_code: KeyCode,
+    _modifiers: KeyModifiers,
+) -> Result<()> {
+    match key_code {
+        KeyCode::Left => {
+            if app.suggestion_selected_index > 0 {
+                app.suggestion_selected_index -= 1;
+            } else {
+                app.suggestion_selected_index = app.follow_up_suggestions.len().saturating_sub(1);
+            }
+        }
+        KeyCode::Right => {
+            let count = app.follow_up_suggestions.len();
+            if count > 0 {
+                app.suggestion_selected_index = (app.suggestion_selected_index + 1) % count;
+            }
+        }
+        KeyCode::Enter => {
+            // Send the selected suggestion as a user message
+            if let Some(suggestion) = app
+                .follow_up_suggestions
+                .get(app.suggestion_selected_index)
+                .cloned()
+            {
+                app.suggestion_mode_active = false;
+                app.follow_up_suggestions.clear();
+                // Set input to the suggestion text and send
+                for character in suggestion.chars() {
+                    app.add_chat_input_char(character);
+                }
+                app.send_chat_message()?;
+                app.reset_chat_scroll();
+            }
+        }
+        KeyCode::Down | KeyCode::Esc => {
+            // Exit suggestion mode, return focus to input
+            app.suggestion_mode_active = false;
+        }
+        KeyCode::Backspace
+        | KeyCode::Up
+        | KeyCode::Home
+        | KeyCode::End
+        | KeyCode::PageUp
+        | KeyCode::PageDown
+        | KeyCode::Tab
+        | KeyCode::BackTab
+        | KeyCode::Delete
+        | KeyCode::Insert
+        | KeyCode::F(_)
+        | KeyCode::Char(_)
+        | KeyCode::Null
+        | KeyCode::CapsLock
+        | KeyCode::ScrollLock
+        | KeyCode::NumLock
+        | KeyCode::PrintScreen
+        | KeyCode::Pause
+        | KeyCode::Menu
+        | KeyCode::KeypadBegin
+        | KeyCode::Media(_)
+        | KeyCode::Modifier(_) => {
+            // Any other key exits suggestion mode
+            app.suggestion_mode_active = false;
+        }
     }
     Ok(())
 }
