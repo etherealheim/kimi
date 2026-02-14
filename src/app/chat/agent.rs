@@ -4,7 +4,6 @@ mod json;
 pub(crate) mod obsidian;
 pub(crate) mod search;
 pub(crate) mod tools;
-mod verification;
 
 
 use crate::agents::ChatMessage as AgentChatMessage;
@@ -293,26 +292,9 @@ impl App {
                         response = "I tried to use a tool to answer your question, but encountered an issue generating the response. Could you rephrase your question?".to_string();
                     }
 
-                    if ctx.should_verify
-                        && !response.trim().is_empty()
-                        && verification::should_verify_response(&ctx.system_context)
-                    {
-                        let verify_messages = verification::build_verification_messages(
-                            &ctx.system_context,
-                            &response,
-                        );
-                        if let Ok(verified) =
-                            ctx.manager.chat(&ctx.agent, &verify_messages)
-                            && !verified.trim().is_empty()
-                        {
-                            let context_usage_for_verify = ctx.context_usage.clone();
-                            let _ = ctx.agent_tx.send(AgentEvent::ResponseWithContext {
-                                response: verified,
-                                context_usage: context_usage_for_verify,
-                            });
-                            return;
-                        }
-                    }
+                    // Verification step disabled — LLMs don't reliably return the
+                    // original response when told "return it if correct", causing
+                    // corrupted outputs ("The response accurately reflects...").
                     let _ = ctx.agent_tx.send(AgentEvent::ResponseWithContext {
                         response,
                         context_usage: ctx.context_usage,
@@ -520,8 +502,6 @@ pub(crate) struct ChatBuildSnapshot {
 
 pub(crate) struct ChatBuildResultWithUsage {
     pub messages: Vec<AgentChatMessage>,
-    pub system_context: String,
-    pub should_verify: bool,
     pub context_usage: Option<ContextUsage>,
     pub pending_search_notice: Option<String>,
     pub forced_response: Option<String>,
@@ -533,8 +513,6 @@ pub(crate) struct AgentChatContext {
     pub agent: crate::agents::Agent,
     pub manager: crate::agents::AgentManager,
     pub messages: Vec<AgentChatMessage>,
-    pub system_context: String,
-    pub should_verify: bool,
     pub agent_tx: std::sync::mpsc::Sender<AgentEvent>,
     pub context_usage: Option<ContextUsage>,
     pub vault_name: String,
@@ -655,8 +633,6 @@ Only suggest once per topic. If they decline, respect that.",
     if forced_response.is_some() {
         return ChatBuildResultWithUsage {
             messages: Vec::new(),
-            system_context: prompt_lines.join("\n\n"),
-            should_verify: false,
             context_usage: None,
             pending_search_notice: None,
             forced_response,
@@ -699,9 +675,6 @@ Only suggest once per topic. If they decline, respect that.",
     let has_context_usage = context_usage.notes_used > 0
         || context_usage.history_used > 0
         || context_usage.memories_used > 0;
-    let has_search_context = prompt_lines
-        .iter()
-        .any(|line| line.starts_with("Brave search results for"));
 
     // Personality text (mood setting) - added last
     if snapshot.personality_enabled
@@ -715,7 +688,6 @@ Only suggest once per topic. If they decline, respect that.",
         prompt_lines,
         chat_history: &snapshot.chat_history,
         has_context_usage,
-        has_search_context,
         context_usage,
         pending_search_notice,
         forced_response,
@@ -987,7 +959,6 @@ struct AssembleParams<'a> {
     prompt_lines: Vec<String>,
     chat_history: &'a [ChatMessage],
     has_context_usage: bool,
-    has_search_context: bool,
     context_usage: ContextUsage,
     pending_search_notice: Option<String>,
     forced_response: Option<String>,
@@ -998,7 +969,6 @@ struct AssembleParams<'a> {
 /// Tier 4: Assemble final messages from prompt lines and chat history
 fn assemble_final_messages(params: AssembleParams) -> ChatBuildResultWithUsage {
     let merged_prompt = params.prompt_lines.join("\n\n");
-    let system_context = merged_prompt.clone();
     let mut messages = vec![AgentChatMessage::system(merged_prompt)];
     for chat_message in params.chat_history {
         if chat_message.role == MessageRole::User {
@@ -1010,8 +980,6 @@ fn assemble_final_messages(params: AssembleParams) -> ChatBuildResultWithUsage {
 
     ChatBuildResultWithUsage {
         messages,
-        system_context,
-        should_verify: params.has_context_usage || params.has_search_context,
         context_usage: if params.has_context_usage {
             Some(params.context_usage)
         } else {

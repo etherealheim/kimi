@@ -43,9 +43,12 @@ impl App {
                     self.cached_recall_context = Some(context);
                 }
                 AgentEvent::FollowUpSuggestions { suggestions } => {
-                    self.follow_up_suggestions = suggestions;
-                    self.suggestion_selected_index = 0;
-                    self.suggestion_mode_active = false;
+                    // Ignore stale suggestions that arrive while a new response is loading
+                    if !self.is_loading {
+                        self.follow_up_suggestions = suggestions;
+                        self.suggestion_selected_index = 0;
+                        self.suggestion_mode_active = false;
+                    }
                 }
                 AgentEvent::TopicsExtracted { topics, conversation_id } => {
                     self.handle_topics_extracted(topics, conversation_id);

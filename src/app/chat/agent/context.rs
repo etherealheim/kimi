@@ -1,6 +1,5 @@
-use crate::services::dates::DateReference;
 use crate::storage::{ConversationSummary, ConversationWithMessages};
-use chrono::{Datelike, Duration, Local, NaiveDate};
+use chrono::{Duration, NaiveDate};
 use color_eyre::Result;
 
 /// Maximum messages per conversation when loading full content
@@ -22,8 +21,9 @@ pub struct RecallResult {
 // ── Main entry point ────────────────────────────────────────────────────────
 
 /// Builds conversation recall context for the system prompt.
-/// For short ranges (today, yesterday) loads actual message content.
-/// For wider ranges (this week, etc.) falls back to summaries.
+/// Uses the universal date parser from `services::dates` to resolve any
+/// natural-language date reference. For short ranges (1-2 days) loads actual
+/// message content; for wider ranges falls back to summaries.
 pub fn build_conversation_recall(
     storage: Option<&crate::storage::StorageManager>,
     query: &str,
@@ -31,19 +31,26 @@ pub fn build_conversation_recall(
     let Some(storage) = storage else {
         return Ok(None);
     };
-    let Some(range) = recall_time_range(query) else {
+    let lowered = query.to_lowercase();
+    if !has_recall_intent(&lowered) {
+        return Ok(None);
+    }
+
+    // Use the universal date parser — handles today, yesterday, this/last week,
+    // this/last/past month, "last 7 days", weekday names, ISO weeks, etc.
+    let date_range = crate::services::dates::parse_date_reference(&lowered)
+        .and_then(|reference| reference.as_range());
+    let Some(range) = date_range else {
         return Ok(None);
     };
 
     let runtime = tokio::runtime::Runtime::new()?;
-    let today = Local::now().date_naive();
-    let (start_date, end_date) = range_to_dates(range, today);
 
     // For short ranges (1-2 days), load actual messages
-    let day_span = (end_date - start_date).num_days() + 1;
+    let day_span = (range.end - range.start).num_days() + 1;
     if day_span <= 2 {
-        let start_rfc = format!("{}T00:00:00+00:00", start_date);
-        let end_rfc = format!("{}T00:00:00+00:00", end_date + Duration::days(1));
+        let start_rfc = format!("{}T00:00:00+00:00", range.start);
+        let end_rfc = format!("{}T00:00:00+00:00", range.end + Duration::days(1));
 
         let conversations = runtime.block_on(async {
             storage
@@ -68,7 +75,7 @@ pub fn build_conversation_recall(
 
     // For wider ranges, fall back to summaries
     let conversations = runtime.block_on(async { storage.load_conversations().await })?;
-    let entries = filter_summaries_by_range(&conversations, start_date, end_date);
+    let entries = filter_summaries_by_range(&conversations, range.start, range.end);
     if entries.is_empty() {
         return Ok(None);
     }
@@ -125,8 +132,9 @@ fn format_summary_recall(entries: &[SummaryLine]) -> String {
     let mut lines = Vec::new();
     lines.push("--- Conversation summaries ---".to_string());
     lines.push(
-        "Use the summaries below to answer recap questions. \
-         If they are insufficient, ask a clarifying question."
+        "Below are summaries of your past conversations with this user. \
+         Present them naturally as things you remember — never say your memory is \
+         broken or acting up. Only mention what the summaries contain."
             .to_string(),
     );
     for entry in entries {
@@ -141,57 +149,7 @@ fn parse_conversation_time(created_at: &str) -> String {
         .map_or_else(|| "unknown time".to_string(), |dt| dt.format("%H:%M").to_string())
 }
 
-// ── Time range detection ────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy)]
-enum RecallRange {
-    Today,
-    Yesterday,
-    ThisWeek,
-    LastWeek,
-    LastDays(u32),
-}
-
-fn recall_time_range(query: &str) -> Option<RecallRange> {
-    let lowered = query.to_lowercase();
-    if !has_recall_intent(&lowered) {
-        return None;
-    }
-
-    // Try comprehensive date parsing first
-    if let Some(date_ref) = crate::services::dates::parse_date_reference(&lowered) {
-        return match date_ref {
-            DateReference::Date(date) => {
-                let today = Local::now().date_naive();
-                if date == today {
-                    Some(RecallRange::Today)
-                } else if date == today - Duration::days(1) {
-                    Some(RecallRange::Yesterday)
-                } else {
-                    None
-                }
-            }
-            DateReference::Week(week) => {
-                let current = crate::services::dates::current_week();
-                let last = crate::services::dates::last_week();
-                if week == current {
-                    Some(RecallRange::ThisWeek)
-                } else if week == last {
-                    Some(RecallRange::LastWeek)
-                } else {
-                    None
-                }
-            }
-            DateReference::Range(_) => Some(RecallRange::ThisWeek),
-        };
-    }
-
-    // Fallback to manual parsing
-    if let Some(days) = parse_last_days(&lowered) {
-        return Some(RecallRange::LastDays(days));
-    }
-    None
-}
+// ── Recall intent detection ─────────────────────────────────────────────────
 
 fn has_recall_intent(lowered: &str) -> bool {
     let triggers = [
@@ -204,48 +162,9 @@ fn has_recall_intent(lowered: &str) -> bool {
         "catch me up",
         "what were we",
         "what we talked",
-        "my week",
-        "this week",
+        "highlights",
     ];
     triggers.iter().any(|term| lowered.contains(term))
-}
-
-fn range_to_dates(range: RecallRange, today: NaiveDate) -> (NaiveDate, NaiveDate) {
-    match range {
-        RecallRange::Today => (today, today),
-        RecallRange::Yesterday => {
-            let yesterday = today - Duration::days(1);
-            (yesterday, yesterday)
-        }
-        RecallRange::ThisWeek => {
-            let days_from_monday = today.weekday().num_days_from_monday() as i64;
-            (today - Duration::days(days_from_monday), today)
-        }
-        RecallRange::LastWeek => (today - Duration::days(7), today - Duration::days(1)),
-        RecallRange::LastDays(days) => {
-            let span = i64::from(days.max(1));
-            (today - Duration::days(span), today)
-        }
-    }
-}
-
-fn parse_last_days(lowered: &str) -> Option<u32> {
-    let tokens: Vec<&str> = lowered.split_whitespace().collect();
-    for window in tokens.windows(3) {
-        if let [number, "days", "ago"] = window
-            && let Ok(value) = number.parse::<u32>()
-        {
-            return Some(value);
-        }
-    }
-    for window in tokens.windows(3) {
-        if let [number, "days", "back"] = window
-            && let Ok(value) = number.parse::<u32>()
-        {
-            return Some(value);
-        }
-    }
-    None
 }
 
 // ── Summary fallback for wider ranges ───────────────────────────────────────

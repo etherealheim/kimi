@@ -13,7 +13,7 @@ use crate::app::{App, MessageRole};
 
 /// Primary chat view with header, messages, input, and footer
 pub fn render_chat_view(f: &mut Frame, app: &App) {
-    let has_suggestions = !app.follow_up_suggestions.is_empty();
+    let has_suggestions = !app.follow_up_suggestions.is_empty() && !app.is_loading;
     let suggestion_height = if has_suggestions { 3 } else { 0 };
 
     let chunks = Layout::default()

@@ -198,8 +198,6 @@ impl App {
                     agent,
                     manager,
                     messages,
-                    system_context: build_result.system_context,
-                    should_verify: build_result.should_verify,
                     agent_tx: agent_tx.clone(),
                     context_usage: build_result.context_usage,
                     vault_name,
